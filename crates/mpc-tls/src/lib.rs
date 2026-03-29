@@ -11,12 +11,14 @@ pub(crate) mod follower;
 pub(crate) mod leader;
 mod msg;
 mod record_layer;
+mod tls13;
 pub(crate) mod utils;
 
 pub use config::{Config, ConfigBuilder, ConfigBuilderError};
 pub use error::MpcTlsError;
 pub use follower::MpcTlsFollower;
 pub use leader::MpcTlsLeader;
+pub use tls13::{Epoch, Tls13ApplicationKeys, Tls13HandshakeKeys, Tls13SessionKeys};
 
 use std::{future::Future, pin::Pin, sync::Arc};
 

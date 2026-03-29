@@ -5,6 +5,7 @@ use crate::{
         SetServerKey, SetServerRandom, StartHandshake,
     },
     record_layer::{aead::MpcAesGcm, DecryptMode, EncryptMode, RecordLayer},
+    tls13::Tls13KeyState,
     utils::opaque_into_parts,
     Config, Role, SessionKeys, Vm,
 };
@@ -87,6 +88,7 @@ impl MpcTlsLeader {
         )) as Box<dyn KeyExchange + Send + Sync>;
 
         let prf = MpcPrf::new(config.prf);
+        let tls13 = Tls13KeyState::new(config.prf, Role::Leader);
 
         let encrypter = MpcAesGcm::new(
             ShareConversionSender::new(OLESender::new(
@@ -113,6 +115,7 @@ impl MpcTlsLeader {
                 vm,
                 ke,
                 prf,
+                tls13,
                 record_layer,
             },
             notifier: BackendNotifier::new(),
@@ -127,6 +130,7 @@ impl MpcTlsLeader {
             vm,
             mut ke,
             mut prf,
+            mut tls13,
             mut record_layer,
         } = self.state.take()
         else {
@@ -143,6 +147,7 @@ impl MpcTlsLeader {
         // Allocate.
         let pms = ke.alloc(&mut (*vm_lock))?;
         let PrfOutput { keys, cf_vd, sf_vd } = prf.alloc(&mut (*vm_lock), pms)?;
+        tls13.alloc(&mut (*vm_lock), pms)?;
         record_layer.set_keys(
             keys.client_write_key,
             keys.client_iv,
@@ -175,6 +180,7 @@ impl MpcTlsLeader {
             vm,
             ke,
             prf,
+            tls13,
             record_layer,
             cf_vd_fut: cf_vd,
             sf_vd_fut: sf_vd,
@@ -192,6 +198,7 @@ impl MpcTlsLeader {
             vm,
             mut ke,
             mut prf,
+            tls13,
             mut record_layer,
             cf_vd_fut,
             sf_vd_fut,
@@ -249,6 +256,7 @@ impl MpcTlsLeader {
             vm,
             ke,
             prf,
+            tls13,
             record_layer,
             cf_vd_fut,
             sf_vd_fut,
@@ -655,6 +663,7 @@ impl Backend for MpcTlsLeader {
             vm,
             mut ke,
             mut prf,
+            tls13,
             mut record_layer,
             cf_vd_fut,
             sf_vd_fut,
@@ -719,6 +728,7 @@ impl Backend for MpcTlsLeader {
             vm,
             _ke: ke,
             prf,
+            tls13,
             record_layer,
             cf_vd_fut,
             sf_vd_fut,
@@ -1044,6 +1054,7 @@ enum State {
         vm: Vm,
         ke: Box<dyn KeyExchange + Send + Sync + 'static>,
         prf: MpcPrf,
+        tls13: Tls13KeyState,
         record_layer: RecordLayer,
     },
     Setup {
@@ -1051,6 +1062,7 @@ enum State {
         vm: Vm,
         ke: Box<dyn KeyExchange + Send + Sync + 'static>,
         prf: MpcPrf,
+        tls13: Tls13KeyState,
         record_layer: RecordLayer,
         cf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
         sf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
@@ -1061,6 +1073,7 @@ enum State {
         vm: Vm,
         ke: Box<dyn KeyExchange + Send + Sync + 'static>,
         prf: MpcPrf,
+        tls13: Tls13KeyState,
         record_layer: RecordLayer,
         cf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
         sf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
@@ -1078,6 +1091,8 @@ enum State {
         vm: Vm,
         _ke: Box<dyn KeyExchange + Send + Sync + 'static>,
         prf: MpcPrf,
+        #[allow(dead_code)]
+        tls13: Tls13KeyState,
         record_layer: RecordLayer,
         cf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
         sf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,

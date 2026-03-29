@@ -56,6 +56,7 @@ web-time = { workspace = true }
 
 [dev-dependencies]
 mpz-common = { workspace = true, features = ["test-utils"] }
+mpz-garble = { workspace = true }
 mpz-ot = { workspace = true, features = ["ideal"] }
 mpz-ideal-vm = { workspace = true }
 

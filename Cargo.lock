@@ -7659,6 +7659,7 @@ dependencies = [
  "mpz-common",
  "mpz-core",
  "mpz-fields",
+ "mpz-garble",
  "mpz-ideal-vm",
  "mpz-memory-core",
  "mpz-ole",

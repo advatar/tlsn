@@ -1,6 +1,7 @@
 use crate::{
     msg::{Message, StartHandshake},
     record_layer::{aead::MpcAesGcm, RecordLayer},
+    tls13::Tls13KeyState,
     Config, MpcTlsError, Role, SessionKeys, Vm,
 };
 use hmac_sha256::{MpcPrf, PrfOutput};
@@ -65,6 +66,7 @@ impl MpcTlsFollower {
         )) as Box<dyn KeyExchange + Send + Sync>;
 
         let prf = MpcPrf::new(config.prf);
+        let tls13 = Tls13KeyState::new(config.prf, Role::Follower);
 
         let encrypter = MpcAesGcm::new(
             ShareConversionReceiver::new(OLEReceiver::new(AnyReceiver::new(
@@ -88,6 +90,7 @@ impl MpcTlsFollower {
                 vm,
                 ke,
                 prf,
+                tls13,
                 record_layer,
             },
         }
@@ -99,6 +102,7 @@ impl MpcTlsFollower {
             vm,
             mut ke,
             mut prf,
+            mut tls13,
             mut record_layer,
         } = self.state.take()
         else {
@@ -112,6 +116,7 @@ impl MpcTlsFollower {
 
             let pms = ke.alloc(vm)?;
             let PrfOutput { keys, cf_vd, sf_vd } = prf.alloc(vm, pms)?;
+            tls13.alloc(vm, pms)?;
             record_layer.set_keys(
                 keys.client_write_key,
                 keys.client_iv,
@@ -146,6 +151,7 @@ impl MpcTlsFollower {
             vm,
             ke,
             prf,
+            tls13,
             record_layer,
             cf_vd,
             sf_vd,
@@ -161,6 +167,7 @@ impl MpcTlsFollower {
             vm,
             mut ke,
             prf,
+            tls13,
             mut record_layer,
             cf_vd,
             sf_vd,
@@ -205,6 +212,7 @@ impl MpcTlsFollower {
             vm,
             ke,
             prf,
+            tls13,
             record_layer,
             cf_vd,
             sf_vd,
@@ -220,6 +228,7 @@ impl MpcTlsFollower {
             vm,
             mut ke,
             mut prf,
+            tls13: _,
             mut record_layer,
             cf_vd: mut cf_vd_fut,
             sf_vd: mut sf_vd_fut,
@@ -437,12 +446,14 @@ enum State {
         vm: Vm,
         ke: Box<dyn KeyExchange + Send + Sync + 'static>,
         prf: MpcPrf,
+        tls13: Tls13KeyState,
         record_layer: RecordLayer,
     },
     Setup {
         vm: Vm,
         ke: Box<dyn KeyExchange + Send + Sync + 'static>,
         prf: MpcPrf,
+        tls13: Tls13KeyState,
         record_layer: RecordLayer,
         cf_vd: DecodeFutureTyped<BitVec, [u8; 12]>,
         sf_vd: DecodeFutureTyped<BitVec, [u8; 12]>,
@@ -451,6 +462,8 @@ enum State {
         vm: Vm,
         ke: Box<dyn KeyExchange + Send + Sync + 'static>,
         prf: MpcPrf,
+        #[allow(dead_code)]
+        tls13: Tls13KeyState,
         record_layer: RecordLayer,
         cf_vd: DecodeFutureTyped<BitVec, [u8; 12]>,
         sf_vd: DecodeFutureTyped<BitVec, [u8; 12]>,
