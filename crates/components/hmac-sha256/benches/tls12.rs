@@ -2,41 +2,50 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 
-use hmac_sha256::{Mode, MpcPrf};
+use hmac_sha256::{Mode, Tls12Prf};
 use mpz_common::context::test_mt_context;
-use mpz_ideal_vm::IdealVm;
+use mpz_garble::protocol::semihonest::{Evaluator, Garbler};
+use mpz_ot::ideal::cot::ideal_cot;
 use mpz_vm_core::{
-    memory::{binary::U8, Array},
+    memory::{binary::U8, correlated::Delta, Array},
     prelude::*,
     Execute,
 };
+use rand::{rngs::StdRng, SeedableRng};
 
 #[allow(clippy::unit_arg)]
 fn criterion_benchmark(c: &mut Criterion) {
-    let mut group = c.benchmark_group("prf");
+    let mut group = c.benchmark_group("tls12");
     group.sample_size(10);
     let rt = tokio::runtime::Runtime::new().unwrap();
 
-    group.bench_function("prf_normal", |b| b.to_async(&rt).iter(|| prf(Mode::Normal)));
-    group.bench_function("prf_reduced", |b| {
-        b.to_async(&rt).iter(|| prf(Mode::Reduced))
+    group.bench_function("tls12_normal", |b| {
+        b.to_async(&rt).iter(|| tls12(Mode::Normal))
+    });
+    group.bench_function("tls12_reduced", |b| {
+        b.to_async(&rt).iter(|| tls12(Mode::Reduced))
     });
 }
 
 criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
 
-async fn prf(mode: Mode) {
+async fn tls12(mode: Mode) {
+    let mut rng = StdRng::seed_from_u64(0);
+
     let pms = [42u8; 32];
     let client_random = [69u8; 32];
     let server_random: [u8; 32] = [96u8; 32];
 
     let (mut leader_exec, mut follower_exec) = test_mt_context(8);
-    let mut leader_ctx = leader_exec.new_context().unwrap();
-    let mut follower_ctx = follower_exec.new_context().unwrap();
+    let mut leader_ctx = leader_exec.new_context().await.unwrap();
+    let mut follower_ctx = follower_exec.new_context().await.unwrap();
 
-    let mut leader_vm = IdealVm::new();
-    let mut follower_vm = IdealVm::new();
+    let delta = Delta::random(&mut rng);
+    let (ot_send, ot_recv) = ideal_cot(delta.into_inner());
+
+    let mut leader_vm = Garbler::new(ot_send, [0u8; 16], delta);
+    let mut follower_vm = Evaluator::new(ot_recv);
 
     let leader_pms: Array<U8, 32> = leader_vm.alloc().unwrap();
     leader_vm.mark_public(leader_pms).unwrap();
@@ -48,8 +57,8 @@ async fn prf(mode: Mode) {
     follower_vm.assign(follower_pms, pms).unwrap();
     follower_vm.commit(follower_pms).unwrap();
 
-    let mut leader = MpcPrf::new(mode);
-    let mut follower = MpcPrf::new(mode);
+    let mut leader = Tls12Prf::new(mode);
+    let mut follower = Tls12Prf::new(mode);
 
     let leader_output = leader.alloc(&mut leader_vm, leader_pms).unwrap();
     let follower_output = follower.alloc(&mut follower_vm, follower_pms).unwrap();
