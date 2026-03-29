@@ -40,8 +40,10 @@ async-trait = { workspace = true }
 derive_builder = { workspace = true }
 enum-try-as-inner = { workspace = true }
 futures = { workspace = true }
+hmac = { workspace = true }
 p256 = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }

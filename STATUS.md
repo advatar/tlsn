@@ -8,3 +8,6 @@
 - [x] Add TLS 1.3 epoch/key types in `crates/mpc-tls` and preserve the current TLS 1.2 `SessionKeys` API used by `tlsn`.
 - [x] Allocate and retain TLS 1.3 key-schedule state in `MpcTlsLeader` and `MpcTlsFollower` so later backend work can consume it.
 - [x] Add a targeted `mpc-tls` TLS 1.3 key-layer test and verify `tlsn-mpc-tls` still builds.
+- [x] Import the TLS 1.3 key-exchange scope/shared-secret helpers from the side workstream into `crates/components/key-exchange`.
+- [x] Consume the retained TLS 1.3 key-schedule state from the `mpc-tls` backend methods so `ServerHello`, Finished, and traffic-mode transitions use the TLS 1.3 path.
+- [x] Implement TLS 1.3 record protection in `mpc-tls` for the v0 workstream and add targeted tests for the handshake/application traffic transitions.

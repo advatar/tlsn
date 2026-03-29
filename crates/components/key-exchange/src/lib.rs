@@ -20,9 +20,13 @@ mod exchange;
 #[cfg(feature = "mock")]
 pub mod mock;
 pub(crate) mod point_addition;
+pub mod tls13;
 
 pub use error::KeyExchangeError;
 pub use exchange::MpcKeyExchange;
+pub use tls13::{
+    NamedGroup as Tls13NamedGroup, Scope as Tls13Scope, ScopeError as Tls13ScopeError, SharedSecret,
+};
 
 use async_trait::async_trait;
 use mpz_common::Context;

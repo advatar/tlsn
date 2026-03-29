@@ -1,5 +1,5 @@
 use crate::{
-    msg::{Message, StartHandshake},
+    msg::{Message, StartHandshake, Tls13ClientFinishedVd, Tls13HelloHash, Tls13ServerFinishedVd},
     record_layer::{aead::MpcAesGcm, RecordLayer},
     tls13::Tls13KeyState,
     Config, MpcTlsError, Role, SessionKeys, Vm,
@@ -21,7 +21,7 @@ use mpz_ot::{
 use mpz_share_conversion::{ShareConversionReceiver, ShareConversionSender};
 use serio::stream::IoStreamExt;
 use std::mem;
-use tls_core::msgs::enums::NamedGroup;
+use tls_core::msgs::enums::{NamedGroup, ProtocolVersion};
 use tlsn_core::{
     connection::{CertBinding, CertBindingV1_2, TlsVersion, VerifyData},
     transcript::TlsTranscript,
@@ -228,7 +228,7 @@ impl MpcTlsFollower {
             vm,
             mut ke,
             mut prf,
-            tls13: _,
+            mut tls13,
             mut record_layer,
             cf_vd: mut cf_vd_fut,
             sf_vd: mut sf_vd_fut,
@@ -239,14 +239,18 @@ impl MpcTlsFollower {
         };
 
         let mut time = None;
+        let mut protocol_version = None;
         let mut client_random = None;
         let mut server_random = None;
         let mut server_key = None;
-        let mut cf_vd = None;
-        let mut sf_vd = None;
+        let mut cf_vd: Option<Vec<u8>> = None;
+        let mut sf_vd: Option<Vec<u8>> = None;
         loop {
             let msg: Message = self.ctx.io_mut().expect_next().await?;
             match msg {
+                Message::SetProtocolVersion(version) => {
+                    protocol_version = Some(version.version);
+                }
                 Message::SetClientRandom(random) => {
                     if client_random.is_some() {
                         return Err(MpcTlsError::hs("client random already set"));
@@ -303,15 +307,18 @@ impl MpcTlsFollower {
                     ke.compute_shares(&mut self.ctx).await?;
                     ke.assign(&mut (*vm))?;
 
-                    while prf.wants_flush() {
-                        prf.flush(&mut *vm)?;
-                        vm.execute_all(&mut self.ctx)
-                            .await
-                            .map_err(MpcTlsError::hs)?;
-                    }
-
                     ke.finalize().await?;
-                    record_layer.setup(&mut self.ctx).await?;
+
+                    if protocol_version != Some(ProtocolVersion::TLSv1_3) {
+                        while prf.wants_flush() {
+                            prf.flush(&mut *vm)?;
+                            vm.execute_all(&mut self.ctx)
+                                .await
+                                .map_err(MpcTlsError::hs)?;
+                        }
+
+                        record_layer.setup(&mut self.ctx).await?;
+                    }
                 }
                 Message::ClientFinishedVd(vd) => {
                     if cf_vd.is_some() {
@@ -335,7 +342,8 @@ impl MpcTlsFollower {
                         cf_vd_fut
                             .try_recv()
                             .map_err(MpcTlsError::hs)?
-                            .ok_or(MpcTlsError::hs("client finished VD not computed"))?,
+                            .ok_or(MpcTlsError::hs("client finished VD not computed"))?
+                            .to_vec(),
                     );
                 }
                 Message::ServerFinishedVd(vd) => {
@@ -360,8 +368,42 @@ impl MpcTlsFollower {
                         sf_vd_fut
                             .try_recv()
                             .map_err(MpcTlsError::hs)?
-                            .ok_or(MpcTlsError::hs("server finished VD not computed"))?,
+                            .ok_or(MpcTlsError::hs("server finished VD not computed"))?
+                            .to_vec(),
                     );
+                }
+                Message::Tls13HelloHash(Tls13HelloHash { hello_hash }) => {
+                    let mut vm = vm
+                        .try_lock()
+                        .map_err(|_| MpcTlsError::other("VM lock is held"))?;
+
+                    tls13
+                        .set_hello_hash(&mut self.ctx, &mut *vm, hello_hash)
+                        .await?;
+                }
+                Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
+                    handshake_hash,
+                    verify_data,
+                }) => {
+                    if cf_vd.is_some() {
+                        return Err(MpcTlsError::hs("client finished VD already computed"));
+                    }
+
+                    let mut vm = vm
+                        .try_lock()
+                        .map_err(|_| MpcTlsError::other("VM lock is held"))?;
+
+                    tls13
+                        .set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash)
+                        .await?;
+                    cf_vd = Some(verify_data.to_vec());
+                }
+                Message::Tls13ServerFinishedVd(Tls13ServerFinishedVd { verify_data }) => {
+                    if sf_vd.is_some() {
+                        return Err(MpcTlsError::hs("server finished VD already computed"));
+                    }
+
+                    sf_vd = Some(verify_data.to_vec());
                 }
                 Message::Encrypt(encrypt) => {
                     record_layer
@@ -401,6 +443,12 @@ impl MpcTlsFollower {
             }
         }
 
+        if protocol_version == Some(ProtocolVersion::TLSv1_3) {
+            return Err(MpcTlsError::other(
+                "tls13 transcript export is not implemented yet",
+            ));
+        }
+
         debug!("committing");
 
         let (sent_records, recv_records) = record_layer.commit(&mut self.ctx, vm).await?;
@@ -429,8 +477,8 @@ impl MpcTlsFollower {
             None,
             handshake_data,
             VerifyData {
-                client_finished: cf_vd.to_vec(),
-                server_finished: sf_vd.to_vec(),
+                client_finished: cf_vd,
+                server_finished: sf_vd,
             },
             sent_records,
             recv_records,

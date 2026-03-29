@@ -1,12 +1,22 @@
+use aes_gcm::{aead::AeadInPlace, Aes128Gcm, NewAead};
+use hmac::{Hmac, Mac};
 use hmac_sha256::{Mode, Role as KeyScheduleRole, Tls13KeySched};
 use mpz_common::Context;
 use mpz_memory_core::{
     binary::{Binary, U8},
-    Array,
+    Array, MemoryExt,
 };
-use mpz_vm_core::Vm as VmTrait;
+use mpz_vm_core::{Execute, Vm as VmTrait};
+use sha2::Sha256;
+use tls_core::msgs::{
+    base::Payload,
+    enums::{ContentType, ProtocolVersion},
+    message::{OpaqueMessage, PlainMessage},
+};
 
 use crate::{MpcTlsError, Role};
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// TLS 1.3 traffic epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,12 +36,16 @@ pub struct Tls13HandshakeKeys {
     pub client_write_key: [u8; 16],
     /// Client write IV.
     pub client_write_iv: [u8; 12],
+    /// Client finished key.
+    pub client_finished_key: [u8; 32],
     /// Client sequence number.
     pub client_sequence: u64,
     /// Server write key.
     pub server_write_key: [u8; 16],
     /// Server write IV.
     pub server_write_iv: [u8; 12],
+    /// Server finished key.
+    pub server_finished_key: [u8; 32],
     /// Server sequence number.
     pub server_sequence: u64,
 }
@@ -64,15 +78,22 @@ pub struct Tls13SessionKeys {
     pub application: Option<Tls13ApplicationKeys>,
 }
 
-// This bridge is carried in the leader/follower state now, but the runtime
-// backend does not consume it until the TLS 1.3 record-layer work lands.
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Tls13ClearApplicationKeys {
+    client_write_key: [u8; 16],
+    client_write_iv: [u8; 12],
+    client_sequence: u64,
+    server_write_key: [u8; 16],
+    server_write_iv: [u8; 12],
+    server_sequence: u64,
+}
+
 pub(crate) struct Tls13KeyState {
     inner: Tls13KeySched,
     keys: Tls13SessionKeys,
+    clear_application: Option<Tls13ClearApplicationKeys>,
 }
 
-#[allow(dead_code)]
 impl Tls13KeyState {
     pub(crate) fn new(mode: Mode, role: Role) -> Self {
         let role = match role {
@@ -83,6 +104,7 @@ impl Tls13KeyState {
         Self {
             inner: Tls13KeySched::new(mode, role),
             keys: Tls13SessionKeys::default(),
+            clear_application: None,
         }
     }
 
@@ -111,9 +133,11 @@ impl Tls13KeyState {
                 epoch: Epoch::Handshake,
                 client_write_key: keys.client_write_key,
                 client_write_iv: keys.client_iv,
+                client_finished_key: keys.client_finished_key,
                 client_sequence: 0,
                 server_write_key: keys.server_write_key,
                 server_write_iv: keys.server_iv,
+                server_finished_key: keys.server_finished_key,
                 server_sequence: 0,
             });
 
@@ -133,6 +157,15 @@ impl Tls13KeyState {
         self.flush_all(ctx, vm).await?;
 
         let keys = self.inner.application_keys()?;
+        let mut client_key = vm.decode(keys.client_write_key).map_err(MpcTlsError::hs)?;
+        let mut client_iv = vm.decode(keys.client_iv).map_err(MpcTlsError::hs)?;
+        let mut server_key = vm.decode(keys.server_write_key).map_err(MpcTlsError::hs)?;
+        let mut server_iv = vm.decode(keys.server_iv).map_err(MpcTlsError::hs)?;
+
+        Execute::execute_all(vm, ctx)
+            .await
+            .map_err(MpcTlsError::hs)?;
+
         self.keys.application = Some(Tls13ApplicationKeys {
             epoch: Epoch::Application,
             client_write_key: keys.client_write_key,
@@ -142,12 +175,131 @@ impl Tls13KeyState {
             server_write_iv: keys.server_iv,
             server_sequence: 0,
         });
+        self.clear_application = Some(Tls13ClearApplicationKeys {
+            client_write_key: client_key
+                .try_recv()
+                .map_err(MpcTlsError::hs)?
+                .ok_or_else(|| MpcTlsError::hs("tls13 client application key not decoded"))?,
+            client_write_iv: client_iv
+                .try_recv()
+                .map_err(MpcTlsError::hs)?
+                .ok_or_else(|| MpcTlsError::hs("tls13 client application iv not decoded"))?,
+            client_sequence: 0,
+            server_write_key: server_key
+                .try_recv()
+                .map_err(MpcTlsError::hs)?
+                .ok_or_else(|| MpcTlsError::hs("tls13 server application key not decoded"))?,
+            server_write_iv: server_iv
+                .try_recv()
+                .map_err(MpcTlsError::hs)?
+                .ok_or_else(|| MpcTlsError::hs("tls13 server application iv not decoded"))?,
+            server_sequence: 0,
+        });
 
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn session_keys(&self) -> &Tls13SessionKeys {
         &self.keys
+    }
+
+    pub(crate) fn server_finished_vd(
+        &self,
+        handshake_hash: [u8; 32],
+    ) -> Result<[u8; 32], MpcTlsError> {
+        let keys = self
+            .keys
+            .handshake
+            .as_ref()
+            .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
+
+        finished_verify_data(keys.server_finished_key, handshake_hash)
+    }
+
+    pub(crate) fn client_finished_vd(
+        &self,
+        handshake_hash: [u8; 32],
+    ) -> Result<[u8; 32], MpcTlsError> {
+        let keys = self
+            .keys
+            .handshake
+            .as_ref()
+            .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
+
+        finished_verify_data(keys.client_finished_key, handshake_hash)
+    }
+
+    pub(crate) fn encrypt_record(
+        &mut self,
+        epoch: Epoch,
+        msg: PlainMessage,
+    ) -> Result<OpaqueMessage, MpcTlsError> {
+        match epoch {
+            Epoch::Handshake => {
+                let keys = self
+                    .keys
+                    .handshake
+                    .as_mut()
+                    .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
+
+                encrypt_tls13_record(
+                    keys.client_write_key,
+                    keys.client_write_iv,
+                    &mut keys.client_sequence,
+                    msg,
+                )
+            }
+            Epoch::Application => {
+                let keys = self
+                    .clear_application
+                    .as_mut()
+                    .ok_or_else(|| MpcTlsError::hs("tls13 application keys are not available"))?;
+
+                encrypt_tls13_record(
+                    keys.client_write_key,
+                    keys.client_write_iv,
+                    &mut keys.client_sequence,
+                    msg,
+                )
+            }
+        }
+    }
+
+    pub(crate) fn decrypt_record(
+        &mut self,
+        epoch: Epoch,
+        msg: OpaqueMessage,
+    ) -> Result<PlainMessage, MpcTlsError> {
+        match epoch {
+            Epoch::Handshake => {
+                let keys = self
+                    .keys
+                    .handshake
+                    .as_mut()
+                    .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
+
+                decrypt_tls13_record(
+                    keys.server_write_key,
+                    keys.server_write_iv,
+                    &mut keys.server_sequence,
+                    msg,
+                )
+            }
+            Epoch::Application => {
+                let keys = self
+                    .clear_application
+                    .as_mut()
+                    .ok_or_else(|| MpcTlsError::hs("tls13 application keys are not available"))?;
+
+                decrypt_tls13_record(
+                    keys.server_write_key,
+                    keys.server_write_iv,
+                    &mut keys.server_sequence,
+                    msg,
+                )
+            }
+        }
     }
 
     async fn flush_all(
@@ -166,9 +318,129 @@ impl Tls13KeyState {
     }
 }
 
+fn finished_verify_data(
+    finished_key: [u8; 32],
+    handshake_hash: [u8; 32],
+) -> Result<[u8; 32], MpcTlsError> {
+    let mut mac = HmacSha256::new_from_slice(&finished_key).map_err(MpcTlsError::hs)?;
+    mac.update(&handshake_hash);
+
+    Ok(mac
+        .finalize()
+        .into_bytes()
+        .as_slice()
+        .try_into()
+        .expect("sha256 hmac output is 32 bytes"))
+}
+
+fn encrypt_tls13_record(
+    key: [u8; 16],
+    iv: [u8; 12],
+    sequence: &mut u64,
+    msg: PlainMessage,
+) -> Result<OpaqueMessage, MpcTlsError> {
+    let mut payload = msg.payload.0;
+    payload.push(msg.typ.get_u8());
+
+    let total_len = payload.len() + 16;
+    let aad = make_tls13_aad(total_len);
+    let nonce = make_tls13_nonce(iv, *sequence);
+    *sequence = sequence
+        .checked_add(1)
+        .ok_or_else(|| MpcTlsError::hs("tls13 write sequence overflow"))?;
+
+    let cipher = Aes128Gcm::new_from_slice(&key)
+        .map_err(|_| MpcTlsError::hs("tls13 aes-gcm key initialization failed"))?;
+    let tag = cipher
+        .encrypt_in_place_detached((&nonce).into(), &aad, &mut payload)
+        .map_err(|_| MpcTlsError::hs("tls13 record encryption failed"))?;
+    payload.extend_from_slice(&tag);
+
+    Ok(OpaqueMessage {
+        typ: ContentType::ApplicationData,
+        version: ProtocolVersion::TLSv1_2,
+        payload: Payload::new(payload),
+    })
+}
+
+fn decrypt_tls13_record(
+    key: [u8; 16],
+    iv: [u8; 12],
+    sequence: &mut u64,
+    msg: OpaqueMessage,
+) -> Result<PlainMessage, MpcTlsError> {
+    if msg.typ != ContentType::ApplicationData || msg.version != ProtocolVersion::TLSv1_2 {
+        return Err(MpcTlsError::hs("unexpected TLS 1.3 record header"));
+    }
+
+    let mut payload = msg.payload.0;
+    if payload.len() < 16 {
+        return Err(MpcTlsError::hs(
+            "tls13 record payload is shorter than the tag",
+        ));
+    }
+
+    let tag = payload.split_off(payload.len() - 16);
+    let aad = make_tls13_aad(payload.len() + 16);
+    let nonce = make_tls13_nonce(iv, *sequence);
+    *sequence = sequence
+        .checked_add(1)
+        .ok_or_else(|| MpcTlsError::hs("tls13 read sequence overflow"))?;
+
+    let cipher = Aes128Gcm::new_from_slice(&key)
+        .map_err(|_| MpcTlsError::hs("tls13 aes-gcm key initialization failed"))?;
+    cipher
+        .decrypt_in_place_detached((&nonce).into(), &aad, &mut payload, tag.as_slice().into())
+        .map_err(|_| MpcTlsError::hs("tls13 record authentication failed"))?;
+
+    let typ = unpad_tls13(&mut payload)?;
+
+    Ok(PlainMessage {
+        typ,
+        version: ProtocolVersion::TLSv1_3,
+        payload: Payload::new(payload),
+    })
+}
+
+fn make_tls13_nonce(iv: [u8; 12], sequence: u64) -> [u8; 12] {
+    let mut nonce = iv;
+    for (byte, seq) in nonce[4..].iter_mut().zip(sequence.to_be_bytes()) {
+        *byte ^= seq;
+    }
+
+    nonce
+}
+
+fn make_tls13_aad(len: usize) -> [u8; 5] {
+    [
+        ContentType::ApplicationData.get_u8(),
+        0x03,
+        0x03,
+        (len >> 8) as u8,
+        len as u8,
+    ]
+}
+
+fn unpad_tls13(payload: &mut Vec<u8>) -> Result<ContentType, MpcTlsError> {
+    loop {
+        match payload.pop() {
+            Some(0) => {}
+            Some(content_type) => {
+                let typ = ContentType::from(content_type);
+                if matches!(typ, ContentType::Unknown(0)) {
+                    return Err(MpcTlsError::hs("illegal tls13 inner plaintext"));
+                }
+
+                return Ok(typ);
+            }
+            None => return Err(MpcTlsError::hs("empty tls13 inner plaintext")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Tls13KeyState;
+    use super::{decrypt_tls13_record, encrypt_tls13_record, Tls13KeyState};
     use crate::{Epoch, Role};
     use hmac_sha256::Mode;
     use mpz_common::{context::test_st_context, Context};
@@ -180,6 +452,11 @@ mod tests {
         Execute, Vm,
     };
     use rand::{rngs::StdRng, SeedableRng};
+    use tls_core::msgs::{
+        base::Payload,
+        enums::{ContentType, ProtocolVersion},
+        message::PlainMessage,
+    };
 
     fn mock_vm() -> (Garbler<IdealCOTSender>, Evaluator<IdealCOTReceiver>) {
         let mut rng = StdRng::seed_from_u64(0);
@@ -264,6 +541,8 @@ mod tests {
         assert_eq!(handshake.client_write_iv, civ_hs);
         assert_eq!(handshake.server_write_key, skey_hs);
         assert_eq!(handshake.server_write_iv, siv_hs);
+        assert_ne!(handshake.client_finished_key, [0u8; 32]);
+        assert_ne!(handshake.server_finished_key, [0u8; 32]);
 
         assert!(
             follower.session_keys().handshake.is_none(),
@@ -306,6 +585,31 @@ mod tests {
         assert_eq!(follower_civ.try_recv().unwrap().unwrap(), civ_app,);
         assert_eq!(follower_skey.try_recv().unwrap().unwrap(), skey_app,);
         assert_eq!(follower_siv.try_recv().unwrap().unwrap(), siv_app,);
+
+        let finished = leader.server_finished_vd(handshake_hash).unwrap();
+        assert_ne!(finished, [0u8; 32]);
+    }
+
+    #[test]
+    fn tls13_record_roundtrip_preserves_inner_type() {
+        let key = from_hex_str("88 b9 6a d6 86 c8 4b e5 5a ce 18 a5 9c ce 5c 87");
+        let iv = from_hex_str("b9 9d c5 8c d5 ff 5a b0 82 fd ad 19");
+        let plain = PlainMessage {
+            typ: ContentType::ApplicationData,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(b"hello tls13".to_vec()),
+        };
+
+        let mut write_seq = 0;
+        let encrypted = encrypt_tls13_record(key, iv, &mut write_seq, plain.clone()).unwrap();
+        assert_eq!(encrypted.typ, ContentType::ApplicationData);
+        assert_eq!(encrypted.version, ProtocolVersion::TLSv1_2);
+
+        let mut read_seq = 0;
+        let decrypted = decrypt_tls13_record(key, iv, &mut read_seq, encrypted).unwrap();
+        assert_eq!(decrypted.typ, plain.typ);
+        assert_eq!(decrypted.version, ProtocolVersion::TLSv1_3);
+        assert_eq!(decrypted.payload.0, plain.payload.0);
     }
 
     #[allow(clippy::type_complexity)]

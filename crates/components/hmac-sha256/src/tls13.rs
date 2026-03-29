@@ -159,7 +159,7 @@ impl Tls13KeySched {
                     return Ok(());
                 };
 
-                let (ckey, civ, skey, siv) = if self.role == Role::Leader {
+                let (ckey, civ, cfk, skey, siv, sfk) = if self.role == Role::Leader {
                     let cs_otp = cs_otp.expect("leader knows cs otp");
                     let ss_otp = ss_otp.expect("leader knows ss otp");
 
@@ -179,23 +179,38 @@ impl Tls13KeySched {
                     let civ: [u8; 12] = hkdf_expand_label(&cs, b"iv", &[], 12)
                         .try_into()
                         .expect("output is 12 bytes");
+                    let cfk: [u8; 32] = hkdf_expand_label(&cs, b"finished", &[], 32)
+                        .try_into()
+                        .expect("output is 32 bytes");
                     let skey: [u8; 16] = hkdf_expand_label(&ss, b"key", &[], 16)
                         .try_into()
                         .expect("output is 16 bytes");
                     let siv: [u8; 12] = hkdf_expand_label(&ss, b"iv", &[], 12)
                         .try_into()
                         .expect("output is 12 bytes");
+                    let sfk: [u8; 32] = hkdf_expand_label(&ss, b"finished", &[], 32)
+                        .try_into()
+                        .expect("output is 32 bytes");
 
-                    (Some(ckey), Some(civ), Some(skey), Some(siv))
+                    (
+                        Some(ckey),
+                        Some(civ),
+                        Some(cfk),
+                        Some(skey),
+                        Some(siv),
+                        Some(sfk),
+                    )
                 } else {
-                    (None, None, None, None)
+                    (None, None, None, None, None, None)
                 };
 
                 self.state = State::KeysDecoded {
                     ckey,
                     civ,
+                    cfk,
                     skey,
                     siv,
+                    sfk,
                 }
             }
             State::MasterSecret(ms) => {
@@ -238,13 +253,17 @@ impl Tls13KeySched {
             State::KeysDecoded {
                 ckey,
                 civ,
+                cfk,
                 skey,
                 siv,
+                sfk,
             } => Ok(HandshakeKeys {
                 client_write_key: ckey.expect("leader knows key"),
                 client_iv: civ.expect("leader knows key"),
+                client_finished_key: cfk.expect("leader knows key"),
                 server_write_key: skey.expect("leader knows key"),
                 server_iv: siv.expect("leader knows key"),
+                server_finished_key: sfk.expect("leader knows key"),
             }),
             _ => Err(FError::state("not in HandshakeComplete state")),
         }
@@ -313,8 +332,10 @@ pub(crate) enum State {
     KeysDecoded {
         ckey: Option<[u8; 16]>,
         civ: Option<[u8; 12]>,
+        cfk: Option<[u8; 32]>,
         skey: Option<[u8; 16]>,
         siv: Option<[u8; 12]>,
+        sfk: Option<[u8; 32]>,
     },
     /// The state in which the master secret is computed.
     ///
@@ -341,8 +362,12 @@ impl State {
 pub struct HandshakeKeys {
     /// Client write key.
     pub client_write_key: [u8; 16],
+    /// Client finished key.
+    pub client_finished_key: [u8; 32],
     /// Server write key.
     pub server_write_key: [u8; 16],
+    /// Server finished key.
+    pub server_finished_key: [u8; 32],
     /// Client IV.
     pub client_iv: [u8; 12],
     /// Server IV.
