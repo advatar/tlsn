@@ -1,0 +1,45 @@
+services:
+  nginx-rsa:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:30443:443"
+    volumes:
+      - ./nginx/nginx-rsa.conf:/etc/nginx/nginx.conf:ro
+      - ./www:/usr/share/nginx/html:ro
+      - ../../../tls/client/test-ca/rsa:/certs/rsa:ro
+
+  nginx-ecdsa:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:30444:443"
+    volumes:
+      - ./nginx/nginx-ecdsa.conf:/etc/nginx/nginx.conf:ro
+      - ./www:/usr/share/nginx/html:ro
+      - ../../../tls/client/test-ca/ecdsa:/certs/ecdsa:ro
+
+  caddy-rsa:
+    image: caddy:2.10-alpine
+    ports:
+      - "127.0.0.1:30445:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./www:/srv:ro
+      - ../../../tls/client/test-ca/rsa:/certs/rsa:ro
+
+  apache-rsa:
+    image: httpd:2.4-alpine
+    ports:
+      - "127.0.0.1:30446:443"
+    volumes:
+      - ./apache/httpd.conf:/usr/local/apache2/conf/httpd.conf:ro
+      - ./www:/usr/local/apache2/htdocs:ro
+      - ../../../tls/client/test-ca/rsa:/certs/rsa:ro
+
+  openssl-rsa:
+    build:
+      context: .
+      dockerfile: ./openssl/Dockerfile
+    ports:
+      - "127.0.0.1:30447:443"
+    volumes:
+      - ../../../tls/client/test-ca/rsa:/certs/rsa:ro

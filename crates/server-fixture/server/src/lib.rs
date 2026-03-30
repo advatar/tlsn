@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io::BufReader,
     sync::{Arc, Mutex},
 };
 
@@ -35,6 +36,171 @@ use tlsn_server_fixture_certs::*;
 use tracing::info;
 
 pub const DEFAULT_FIXTURE_PORT: u16 = 3000;
+const TEST_CA_SERVER_DOMAIN: &str = "testserver.com";
+const RSA_CA_CERT_DER: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tls/client/test-ca/rsa/ca.der"
+));
+const RSA_END_FULLCHAIN_PEM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tls/client/test-ca/rsa/end.fullchain"
+));
+const RSA_END_KEY_PEM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tls/client/test-ca/rsa/end.key"
+));
+const ECDSA_CA_CERT_DER: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tls/client/test-ca/ecdsa/ca.der"
+));
+const ECDSA_END_FULLCHAIN_PEM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tls/client/test-ca/ecdsa/end.fullchain"
+));
+const ECDSA_END_KEY_PEM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../tls/client/test-ca/ecdsa/end.key"
+));
+
+/// TLS certificate profile served by the fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureCertProfile {
+    /// The original self-signed test-server.io certificate fixture.
+    Default,
+    /// The RSA chain reused from the tls client test CA.
+    Rsa,
+    /// The ECDSA chain reused from the tls client test CA.
+    Ecdsa,
+}
+
+impl FixtureCertProfile {
+    /// Returns the expected DNS name for this certificate profile.
+    pub fn server_name(self) -> &'static str {
+        match self {
+            Self::Default => SERVER_DOMAIN,
+            Self::Rsa | Self::Ecdsa => TEST_CA_SERVER_DOMAIN,
+        }
+    }
+
+    /// Returns the root CA used to validate this certificate profile.
+    pub fn ca_cert_der(self) -> &'static [u8] {
+        match self {
+            Self::Default => CA_CERT_DER,
+            Self::Rsa => RSA_CA_CERT_DER,
+            Self::Ecdsa => ECDSA_CA_CERT_DER,
+        }
+    }
+}
+
+impl std::str::FromStr for FixtureCertProfile {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "default" => Ok(Self::Default),
+            "rsa" => Ok(Self::Rsa),
+            "ecdsa" => Ok(Self::Ecdsa),
+            _ => Err(anyhow::anyhow!("unknown server cert profile: {value}")),
+        }
+    }
+}
+
+/// Client-auth behavior for the fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixtureClientAuth {
+    /// Do not send a TLS CertificateRequest.
+    None,
+    /// Request but do not require a client certificate.
+    Optional,
+    /// Require a client certificate.
+    Required,
+}
+
+impl std::str::FromStr for FixtureClientAuth {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "none" => Ok(Self::None),
+            "optional" => Ok(Self::Optional),
+            "required" => Ok(Self::Required),
+            _ => Err(anyhow::anyhow!("unknown client auth mode: {value}")),
+        }
+    }
+}
+
+/// TLS configuration for the fixture server.
+#[derive(Debug, Clone)]
+pub struct FixtureConfig {
+    cert_profile: FixtureCertProfile,
+    client_auth: FixtureClientAuth,
+    alpn_protocols: Vec<Vec<u8>>,
+}
+
+impl Default for FixtureConfig {
+    fn default() -> Self {
+        Self {
+            cert_profile: FixtureCertProfile::Default,
+            client_auth: FixtureClientAuth::Optional,
+            alpn_protocols: Vec::new(),
+        }
+    }
+}
+
+impl FixtureConfig {
+    /// Creates a config from environment variables used by the fixture binary.
+    pub fn from_env() -> anyhow::Result<Self> {
+        let cert_profile = std::env::var("TLSN_SERVER_CERT_PROFILE")
+            .ok()
+            .map(|value| value.parse())
+            .transpose()?
+            .unwrap_or(FixtureCertProfile::Default);
+        let client_auth = std::env::var("TLSN_SERVER_CLIENT_AUTH")
+            .ok()
+            .map(|value| value.parse())
+            .transpose()?
+            .unwrap_or(FixtureClientAuth::Optional);
+        let alpn_protocols = std::env::var("TLSN_SERVER_ALPN")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .filter(|proto| !proto.is_empty())
+                    .map(|proto| proto.as_bytes().to_vec())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(Self {
+            cert_profile,
+            client_auth,
+            alpn_protocols,
+        })
+    }
+
+    /// Sets the certificate profile.
+    pub fn cert_profile(mut self, cert_profile: FixtureCertProfile) -> Self {
+        self.cert_profile = cert_profile;
+        self
+    }
+
+    /// Sets the client-auth mode.
+    pub fn client_auth(mut self, client_auth: FixtureClientAuth) -> Self {
+        self.client_auth = client_auth;
+        self
+    }
+
+    /// Sets the ALPN protocols advertised by the fixture.
+    pub fn alpn_protocols(mut self, alpn_protocols: Vec<Vec<u8>>) -> Self {
+        self.alpn_protocols = alpn_protocols;
+        self
+    }
+
+    /// Returns the active certificate profile.
+    pub fn cert_profile_ref(&self) -> FixtureCertProfile {
+        self.cert_profile
+    }
+}
 
 struct AppState {
     shutdown: Option<oneshot::Sender<()>>,
@@ -52,26 +218,12 @@ fn app(state: AppState) -> Router {
         .with_state(Arc::new(Mutex::new(state)))
 }
 
-/// Bind the server to the given socket.
-pub async fn bind<T: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+/// Bind the server to the given socket using the provided TLS config.
+pub async fn bind_with_config<T: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     socket: T,
+    fixture_config: FixtureConfig,
 ) -> anyhow::Result<()> {
-    let key = PrivateKeyDer::Pkcs8(SERVER_KEY_DER.into());
-    let cert = CertificateDer::from(SERVER_CERT_DER);
-
-    // Set up a client certificate verifier.
-    let mut root_store = RootCertStore::empty();
-    root_store.add(CA_CERT_DER.into()).unwrap();
-    let client_cert_verifier = WebPkiClientVerifier::builder(root_store.into())
-        .allow_unauthenticated()
-        .build()
-        .unwrap();
-
-    let config = ServerConfig::builder()
-        .with_client_cert_verifier(client_cert_verifier)
-        .with_single_cert(vec![cert], key)
-        .unwrap();
-
+    let config = build_server_config(&fixture_config)?;
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
     let conn = acceptor.accept(socket).await?;
@@ -96,6 +248,102 @@ pub async fn bind<T: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
     }
 
     Ok(())
+}
+
+/// Bind the server to the given socket with the default TLS config.
+pub async fn bind<T: AsyncRead + AsyncWrite + Send + Unpin + 'static>(
+    socket: T,
+) -> anyhow::Result<()> {
+    bind_with_config(socket, FixtureConfig::default()).await
+}
+
+struct FixtureIdentity {
+    certs: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+    client_auth_ca: &'static [u8],
+}
+
+fn build_server_config(fixture_config: &FixtureConfig) -> anyhow::Result<ServerConfig> {
+    let FixtureIdentity {
+        certs,
+        key,
+        client_auth_ca,
+    } = fixture_identity(fixture_config.cert_profile)?;
+
+    let mut config = match fixture_config.client_auth {
+        FixtureClientAuth::None => ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?,
+        FixtureClientAuth::Optional => {
+            let verifier = make_client_cert_verifier(client_auth_ca, true)?;
+            ServerConfig::builder()
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(certs, key)?
+        }
+        FixtureClientAuth::Required => {
+            let verifier = make_client_cert_verifier(client_auth_ca, false)?;
+            ServerConfig::builder()
+                .with_client_cert_verifier(verifier)
+                .with_single_cert(certs, key)?
+        }
+    };
+
+    config.alpn_protocols = fixture_config.alpn_protocols.clone();
+
+    Ok(config)
+}
+
+fn make_client_cert_verifier(
+    ca_cert_der: &'static [u8],
+    allow_unauthenticated: bool,
+) -> anyhow::Result<Arc<dyn futures_rustls::rustls::server::danger::ClientCertVerifier>> {
+    let mut root_store = RootCertStore::empty();
+    root_store.add(ca_cert_der.into())?;
+
+    let builder = WebPkiClientVerifier::builder(root_store.into());
+    let verifier = if allow_unauthenticated {
+        builder.allow_unauthenticated().build()?
+    } else {
+        builder.build()?
+    };
+
+    Ok(verifier)
+}
+
+fn fixture_identity(cert_profile: FixtureCertProfile) -> anyhow::Result<FixtureIdentity> {
+    match cert_profile {
+        FixtureCertProfile::Default => Ok(FixtureIdentity {
+            certs: vec![CertificateDer::from(SERVER_CERT_DER)],
+            key: PrivateKeyDer::Pkcs8(SERVER_KEY_DER.into()),
+            client_auth_ca: CA_CERT_DER,
+        }),
+        FixtureCertProfile::Rsa => Ok(FixtureIdentity {
+            certs: parse_pem_chain(RSA_END_FULLCHAIN_PEM)?,
+            key: parse_pkcs8_key(RSA_END_KEY_PEM)?,
+            client_auth_ca: RSA_CA_CERT_DER,
+        }),
+        FixtureCertProfile::Ecdsa => Ok(FixtureIdentity {
+            certs: parse_pem_chain(ECDSA_END_FULLCHAIN_PEM)?,
+            key: parse_pkcs8_key(ECDSA_END_KEY_PEM)?,
+            client_auth_ca: ECDSA_CA_CERT_DER,
+        }),
+    }
+}
+
+fn parse_pem_chain(pem: &'static [u8]) -> anyhow::Result<Vec<CertificateDer<'static>>> {
+    Ok(rustls_pemfile::certs(&mut BufReader::new(pem))?
+        .into_iter()
+        .map(CertificateDer::from)
+        .collect())
+}
+
+fn parse_pkcs8_key(pem: &'static [u8]) -> anyhow::Result<PrivateKeyDer<'static>> {
+    let key = rustls_pemfile::pkcs8_private_keys(&mut BufReader::new(pem))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing pkcs8 private key"))?;
+
+    Ok(PrivateKeyDer::Pkcs8(key.into()))
 }
 
 async fn bytes(

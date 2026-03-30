@@ -16,6 +16,21 @@ Set the enviroment variable `PORT` to configured the port the server runs on.
 PORT=3001 cargo run --release
 ```
 
+## TLS profiles
+
+The fixture can be started with different TLS certificate and client-auth
+profiles:
+
+```bash
+TLSN_SERVER_CERT_PROFILE=rsa TLSN_SERVER_CLIENT_AUTH=none cargo run --release
+```
+
+Supported values:
+
+- `TLSN_SERVER_CERT_PROFILE`: `default`, `rsa`, `ecdsa`
+- `TLSN_SERVER_CLIENT_AUTH`: `none`, `optional`, `required`
+- `TLSN_SERVER_ALPN`: comma-separated ALPN list such as `http/1.1,h2`
+
 ## Logging
 
 Enable server logs by setting the log level:

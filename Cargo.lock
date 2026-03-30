@@ -7746,6 +7746,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "rustls-pemfile",
  "serde_json",
  "tlsn-server-fixture-certs",
  "tokio",

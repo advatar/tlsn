@@ -1,0 +1,11 @@
+{
+    auto_https off
+}
+
+:443 {
+    tls /certs/rsa/end.fullchain /certs/rsa/end.key {
+        protocols tls1.3
+    }
+    root * /srv
+    file_server
+}
