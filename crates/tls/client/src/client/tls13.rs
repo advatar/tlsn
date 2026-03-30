@@ -128,6 +128,8 @@ pub(super) async fn handle_server_hello(
         .backend
         .set_decrypt(DecryptMode::Handshake)
         .await?;
+    cx.common.record_layer.prepare_message_decrypter();
+    cx.common.record_layer.start_decrypting();
 
     if !cx.data.early_data.is_enabled() {
         // Set the client encryption key for handshakes if early data is not used
@@ -135,6 +137,8 @@ pub(super) async fn handle_server_hello(
             .backend
             .set_encrypt(EncryptMode::Handshake)
             .await?;
+        cx.common.record_layer.prepare_message_encrypter();
+        cx.common.record_layer.start_encrypting();
     }
 
     emit_fake_ccs(&mut sent_tls13_fake_ccs, cx.common).await?;
@@ -450,6 +454,11 @@ impl State<ClientConnectionData> for ExpectCertificate {
             cert_chain.get_end_entity_scts(),
         );
 
+        cx.common
+            .backend
+            .set_server_cert_details(server_cert.clone())
+            .await?;
+
         if let Some(sct_list) = server_cert.scts() {
             if hs::sct_list_is_invalid(sct_list) {
                 let error_msg = "server sent invalid SCT list".to_string();
@@ -535,6 +544,11 @@ impl State<ClientConnectionData> for ExpectCertificateVerify {
             Ok(sig_verified) => sig_verified,
             Err(e) => return Err(hs::send_cert_error_alert(cx.common, Error::CoreError(e)).await?),
         };
+
+        cx.common
+            .backend
+            .set_tls13_server_cert_verify(cert_verify.clone(), handshake_hash.as_ref().to_vec())
+            .await?;
 
         cx.common.peer_certificates = Some(self.server_cert.cert_chain().to_vec());
         self.transcript.add_message(&m);
@@ -686,6 +700,10 @@ impl State<ClientConnectionData> for ExpectFinished {
         };
 
         st.transcript.add_message(&m);
+        cx.common
+            .backend
+            .set_tls13_handshake_hash(st.transcript.get_current_hash().as_ref().to_vec())
+            .await?;
 
         /* The EndOfEarlyData message to server is still encrypted with early data
          * keys, but appears in the transcript after the server Finished. */
@@ -745,6 +763,10 @@ impl State<ClientConnectionData> for ExpectFinished {
             .backend
             .set_decrypt(DecryptMode::Application)
             .await?;
+        cx.common.record_layer.prepare_message_encrypter();
+        cx.common.record_layer.prepare_message_decrypter();
+        cx.common.record_layer.start_encrypting();
+        cx.common.record_layer.start_decrypting();
 
         cx.common.start_traffic().await?;
 

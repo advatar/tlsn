@@ -13,6 +13,7 @@ use tls_core::msgs::{
     enums::{ContentType, ProtocolVersion},
     message::{OpaqueMessage, PlainMessage},
 };
+use tlsn_core::transcript::{ContentType as TranscriptContentType, Record};
 
 use crate::{MpcTlsError, Role};
 
@@ -234,7 +235,7 @@ impl Tls13KeyState {
         &mut self,
         epoch: Epoch,
         msg: PlainMessage,
-    ) -> Result<OpaqueMessage, MpcTlsError> {
+    ) -> Result<(OpaqueMessage, Record), MpcTlsError> {
         match epoch {
             Epoch::Handshake => {
                 let keys = self
@@ -270,7 +271,7 @@ impl Tls13KeyState {
         &mut self,
         epoch: Epoch,
         msg: OpaqueMessage,
-    ) -> Result<PlainMessage, MpcTlsError> {
+    ) -> Result<(PlainMessage, Record), MpcTlsError> {
         match epoch {
             Epoch::Handshake => {
                 let keys = self
@@ -338,13 +339,16 @@ fn encrypt_tls13_record(
     iv: [u8; 12],
     sequence: &mut u64,
     msg: PlainMessage,
-) -> Result<OpaqueMessage, MpcTlsError> {
-    let mut payload = msg.payload.0;
-    payload.push(msg.typ.get_u8());
+) -> Result<(OpaqueMessage, Record), MpcTlsError> {
+    let seq = *sequence;
+    let typ = msg.typ;
+    let plaintext = msg.payload.0;
+    let mut payload = plaintext.clone();
+    payload.push(typ.get_u8());
 
     let total_len = payload.len() + 16;
     let aad = make_tls13_aad(total_len);
-    let nonce = make_tls13_nonce(iv, *sequence);
+    let nonce = make_tls13_nonce(iv, seq);
     *sequence = sequence
         .checked_add(1)
         .ok_or_else(|| MpcTlsError::hs("tls13 write sequence overflow"))?;
@@ -354,13 +358,24 @@ fn encrypt_tls13_record(
     let tag = cipher
         .encrypt_in_place_detached((&nonce).into(), &aad, &mut payload)
         .map_err(|_| MpcTlsError::hs("tls13 record encryption failed"))?;
+    let record = Record {
+        seq,
+        typ: TranscriptContentType::from(typ),
+        plaintext: Some(plaintext),
+        explicit_nonce: Vec::new(),
+        ciphertext: payload.clone(),
+        tag: Some(tag.to_vec()),
+    };
     payload.extend_from_slice(&tag);
 
-    Ok(OpaqueMessage {
-        typ: ContentType::ApplicationData,
-        version: ProtocolVersion::TLSv1_2,
-        payload: Payload::new(payload),
-    })
+    Ok((
+        OpaqueMessage {
+            typ: ContentType::ApplicationData,
+            version: ProtocolVersion::TLSv1_2,
+            payload: Payload::new(payload),
+        },
+        record,
+    ))
 }
 
 fn decrypt_tls13_record(
@@ -368,12 +383,14 @@ fn decrypt_tls13_record(
     iv: [u8; 12],
     sequence: &mut u64,
     msg: OpaqueMessage,
-) -> Result<PlainMessage, MpcTlsError> {
+) -> Result<(PlainMessage, Record), MpcTlsError> {
     if msg.typ != ContentType::ApplicationData || msg.version != ProtocolVersion::TLSv1_2 {
         return Err(MpcTlsError::hs("unexpected TLS 1.3 record header"));
     }
 
-    let mut payload = msg.payload.0;
+    let seq = *sequence;
+    let payload_bytes = msg.payload.0;
+    let mut payload = payload_bytes;
     if payload.len() < 16 {
         return Err(MpcTlsError::hs(
             "tls13 record payload is shorter than the tag",
@@ -381,8 +398,9 @@ fn decrypt_tls13_record(
     }
 
     let tag = payload.split_off(payload.len() - 16);
+    let ciphertext = payload.clone();
     let aad = make_tls13_aad(payload.len() + 16);
-    let nonce = make_tls13_nonce(iv, *sequence);
+    let nonce = make_tls13_nonce(iv, seq);
     *sequence = sequence
         .checked_add(1)
         .ok_or_else(|| MpcTlsError::hs("tls13 read sequence overflow"))?;
@@ -394,12 +412,24 @@ fn decrypt_tls13_record(
         .map_err(|_| MpcTlsError::hs("tls13 record authentication failed"))?;
 
     let typ = unpad_tls13(&mut payload)?;
+    let plaintext = payload;
+    let record = Record {
+        seq,
+        typ: TranscriptContentType::from(typ),
+        plaintext: Some(plaintext.clone()),
+        explicit_nonce: Vec::new(),
+        ciphertext,
+        tag: Some(tag),
+    };
 
-    Ok(PlainMessage {
-        typ,
-        version: ProtocolVersion::TLSv1_3,
-        payload: Payload::new(payload),
-    })
+    Ok((
+        PlainMessage {
+            typ,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(plaintext),
+        },
+        record,
+    ))
 }
 
 fn make_tls13_nonce(iv: [u8; 12], sequence: u64) -> [u8; 12] {
@@ -457,6 +487,7 @@ mod tests {
         enums::{ContentType, ProtocolVersion},
         message::PlainMessage,
     };
+    use tlsn_core::transcript::ContentType as TranscriptContentType;
 
     fn mock_vm() -> (Garbler<IdealCOTSender>, Evaluator<IdealCOTReceiver>) {
         let mut rng = StdRng::seed_from_u64(0);
@@ -601,15 +632,19 @@ mod tests {
         };
 
         let mut write_seq = 0;
-        let encrypted = encrypt_tls13_record(key, iv, &mut write_seq, plain.clone()).unwrap();
+        let (encrypted, record) =
+            encrypt_tls13_record(key, iv, &mut write_seq, plain.clone()).unwrap();
         assert_eq!(encrypted.typ, ContentType::ApplicationData);
         assert_eq!(encrypted.version, ProtocolVersion::TLSv1_2);
+        assert_eq!(record.typ, TranscriptContentType::ApplicationData);
 
         let mut read_seq = 0;
-        let decrypted = decrypt_tls13_record(key, iv, &mut read_seq, encrypted).unwrap();
+        let (decrypted, decrypted_record) =
+            decrypt_tls13_record(key, iv, &mut read_seq, encrypted).unwrap();
         assert_eq!(decrypted.typ, plain.typ);
         assert_eq!(decrypted.version, ProtocolVersion::TLSv1_3);
         assert_eq!(decrypted.payload.0, plain.payload.0);
+        assert_eq!(decrypted_record.typ, TranscriptContentType::ApplicationData);
     }
 
     #[allow(clippy::type_complexity)]

@@ -415,21 +415,23 @@ impl InnerState {
             // Pull out ZK VM.
             let mut zk = vm.zk();
 
-            // Prove tag verification of received records.
-            // The prover drops the proof output.
-            let _ = verify_tags(
-                &mut *zk,
-                (self.keys.server_write_key, self.keys.server_write_iv),
-                self.keys.server_write_mac_key,
-                *transcript.version(),
-                transcript.recv().to_vec(),
-            )
-            .map_err(|err| TlsnError::internal().with_source(err))?;
-            debug!("verified tags from server");
-
-            zk.execute_all(&mut ctx)
-                .await
+            if transcript.version() != &tlsn_core::connection::TlsVersion::V1_3 {
+                // Prove tag verification of received records.
+                // The prover drops the proof output.
+                let _ = verify_tags(
+                    &mut *zk,
+                    (self.keys.server_write_key, self.keys.server_write_iv),
+                    self.keys.server_write_mac_key,
+                    *transcript.version(),
+                    transcript.recv().to_vec(),
+                )
                 .map_err(|err| TlsnError::internal().with_source(err))?;
+                debug!("verified tags from server");
+
+                zk.execute_all(&mut ctx)
+                    .await
+                    .map_err(|err| TlsnError::internal().with_source(err))?;
+            }
         }
 
         debug!("MPC-TLS done");

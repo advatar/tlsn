@@ -213,33 +213,35 @@ impl Verifier<state::CommitAccepted> {
 
         // Prepare for the prover to prove tag verification of the received
         // records.
-        let tag_proof = verify_tags(
-            &mut vm,
-            (keys.server_write_key, keys.server_write_iv),
-            keys.server_write_mac_key,
-            *tls_transcript.version(),
-            tls_transcript.recv().to_vec(),
-        )
-        .map_err(|e| {
-            Error::internal()
-                .with_msg("tag verification setup failed")
-                .with_source(e)
-        })?;
+        if tls_transcript.version() != &tlsn_core::connection::TlsVersion::V1_3 {
+            let tag_proof = verify_tags(
+                &mut vm,
+                (keys.server_write_key, keys.server_write_iv),
+                keys.server_write_mac_key,
+                *tls_transcript.version(),
+                tls_transcript.recv().to_vec(),
+            )
+            .map_err(|e| {
+                Error::internal()
+                    .with_msg("tag verification setup failed")
+                    .with_source(e)
+            })?;
 
-        vm.execute_all(&mut ctx).await.map_err(|e| {
-            Error::internal()
-                .with_msg("tag verification zk execution failed")
-                .with_source(e)
-        })?;
+            vm.execute_all(&mut ctx).await.map_err(|e| {
+                Error::internal()
+                    .with_msg("tag verification zk execution failed")
+                    .with_source(e)
+            })?;
 
-        // Verify the tags.
-        // After the verification, the entire TLS trancript becomes
-        // authenticated from the verifier's perspective.
-        tag_proof.verify().map_err(|e| {
-            Error::internal()
-                .with_msg("tag verification failed")
-                .with_source(e)
-        })?;
+            // Verify the tags.
+            // After the verification, the entire TLS trancript becomes
+            // authenticated from the verifier's perspective.
+            tag_proof.verify().map_err(|e| {
+                Error::internal()
+                    .with_msg("tag verification failed")
+                    .with_source(e)
+            })?;
+        }
         debug!("MPC-TLS done");
 
         Ok(Verifier {

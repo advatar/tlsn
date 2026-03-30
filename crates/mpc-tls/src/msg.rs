@@ -3,6 +3,7 @@ use tls_core::{
     key::PublicKey,
     msgs::enums::{ContentType, ProtocolVersion},
 };
+use tlsn_core::transcript::Record;
 
 use crate::record_layer::{DecryptMode, EncryptMode};
 
@@ -17,8 +18,12 @@ pub(crate) enum Message {
     ClientFinishedVd(ClientFinishedVd),
     ServerFinishedVd(ServerFinishedVd),
     Tls13HelloHash(Tls13HelloHash),
+    Tls13HandshakeHash(Tls13HandshakeHash),
+    Tls13CertVerify(Tls13CertVerify),
     Tls13ClientFinishedVd(Tls13ClientFinishedVd),
     Tls13ServerFinishedVd(Tls13ServerFinishedVd),
+    Tls13SendRecord(Tls13RecordMessage),
+    Tls13RecvRecord(Tls13RecordMessage),
     Encrypt(Encrypt),
     Decrypt(Decrypt),
     StartTraffic,
@@ -86,6 +91,16 @@ pub(crate) struct Tls13HelloHash {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Tls13HandshakeHash {
+    pub(crate) handshake_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Tls13CertVerify {
+    pub(crate) transcript_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13ClientFinishedVd {
     pub(crate) handshake_hash: [u8; 32],
     pub(crate) verify_data: [u8; 32],
@@ -94,6 +109,11 @@ pub(crate) struct Tls13ClientFinishedVd {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13ServerFinishedVd {
     pub(crate) verify_data: [u8; 32],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Tls13RecordMessage {
+    pub(crate) record: Record,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

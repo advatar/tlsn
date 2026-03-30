@@ -2,10 +2,13 @@ use mpc_tls::SessionKeys;
 use mpz_common::Context;
 use mpz_memory_core::binary::Binary;
 use mpz_vm_core::Vm;
+use rangeset::iter::RangeIterator;
+use rangeset::ops::Set;
 use rangeset::set::RangeSet;
 use tlsn_core::{
     ProverOutput,
     config::prove::ProveConfig,
+    connection::TlsVersion,
     transcript::{
         ContentType, Direction, TlsTranscript, Transcript, TranscriptCommitment, TranscriptSecret,
     },
@@ -13,7 +16,11 @@ use tlsn_core::{
 
 use crate::{
     Error, Result,
-    transcript_internal::{TranscriptRefs, auth::prove_plaintext, commit::hash::prove_hash},
+    transcript_internal::{
+        TranscriptRefs,
+        auth::{commit_public_plaintext, prove_plaintext},
+        commit::hash::prove_hash,
+    },
 };
 
 pub(crate) async fn prove<T: Vm<Binary> + Send + Sync>(
@@ -41,35 +48,51 @@ pub(crate) async fn prove<T: Vm<Binary> + Send + Sync>(
     }
 
     let transcript_refs = TranscriptRefs {
-        sent: prove_plaintext(
-            vm,
-            keys.client_write_key,
-            keys.client_write_iv,
-            transcript.sent(),
-            tls_transcript
-                .sent()
-                .iter()
-                .filter(|record| record.typ == ContentType::ApplicationData),
-            &reveal_sent,
-            &commit_sent,
-        )
+        sent: if tls_transcript.version() == &TlsVersion::V1_3 {
+            commit_public_plaintext(
+                vm,
+                transcript.sent(),
+                &commit_sent.union(&reveal_sent).into_set(),
+            )
+        } else {
+            prove_plaintext(
+                vm,
+                keys.client_write_key,
+                keys.client_write_iv,
+                transcript.sent(),
+                tls_transcript
+                    .sent()
+                    .iter()
+                    .filter(|record| record.typ == ContentType::ApplicationData),
+                &reveal_sent,
+                &commit_sent,
+            )
+        }
         .map_err(|e| {
             Error::internal()
                 .with_msg("proving failed during sent plaintext commitment")
                 .with_source(e)
         })?,
-        recv: prove_plaintext(
-            vm,
-            keys.server_write_key,
-            keys.server_write_iv,
-            transcript.received(),
-            tls_transcript
-                .recv()
-                .iter()
-                .filter(|record| record.typ == ContentType::ApplicationData),
-            &reveal_recv,
-            &commit_recv,
-        )
+        recv: if tls_transcript.version() == &TlsVersion::V1_3 {
+            commit_public_plaintext(
+                vm,
+                transcript.received(),
+                &commit_recv.union(&reveal_recv).into_set(),
+            )
+        } else {
+            prove_plaintext(
+                vm,
+                keys.server_write_key,
+                keys.server_write_iv,
+                transcript.received(),
+                tls_transcript
+                    .recv()
+                    .iter()
+                    .filter(|record| record.typ == ContentType::ApplicationData),
+                &reveal_recv,
+                &commit_recv,
+            )
+        }
         .map_err(|e| {
             Error::internal()
                 .with_msg("proving failed during received plaintext commitment")

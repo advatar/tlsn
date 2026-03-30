@@ -2,8 +2,9 @@ use crate::{
     error::MpcTlsError,
     msg::{
         ClientFinishedVd, Decrypt, Encrypt, Message, ServerFinishedVd, SetClientRandom,
-        SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake, Tls13ClientFinishedVd,
-        Tls13HelloHash, Tls13ServerFinishedVd,
+        SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake, Tls13CertVerify,
+        Tls13ClientFinishedVd, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
+        Tls13ServerFinishedVd,
     },
     record_layer::{
         aead::MpcAesGcm, DecryptMode as RecordDecryptMode, EncryptMode as RecordEncryptMode,
@@ -43,15 +44,18 @@ use tls_core::{
     msgs::{
         base::Payload,
         enums::{CipherSuite, ContentType, NamedGroup, ProtocolVersion},
-        handshake::Random,
+        handshake::{DigitallySignedStruct, Random},
         message::{OpaqueMessage, PlainMessage},
     },
     suites::SupportedCipherSuite,
     verify::verify_sig_determine_alg,
 };
 use tlsn_core::{
-    connection::{CertBinding, CertBindingV1_2, ServerSignature, TlsVersion, VerifyData},
-    transcript::TlsTranscript,
+    connection::{
+        CertBinding, CertBindingV1_2, CertBindingV1_3, ServerSignature, SignatureAlgorithm,
+        TlsVersion, VerifyData,
+    },
+    transcript::{Record, TlsTranscript},
     webpki::CertificateDer,
 };
 use tracing::{debug, instrument, trace, warn};
@@ -71,6 +75,8 @@ pub struct MpcTlsLeader {
     tls13_decrypt_epoch: Option<Epoch>,
     tls13_incoming: VecDeque<PlainMessage>,
     tls13_outgoing: VecDeque<OpaqueMessage>,
+    tls13_sent_records: Vec<Record>,
+    tls13_recv_records: Vec<Record>,
 }
 
 impl MpcTlsLeader {
@@ -136,6 +142,8 @@ impl MpcTlsLeader {
             tls13_decrypt_epoch: None,
             tls13_incoming: VecDeque::new(),
             tls13_outgoing: VecDeque::new(),
+            tls13_sent_records: Vec::new(),
+            tls13_recv_records: Vec::new(),
         }
     }
 
@@ -276,6 +284,8 @@ impl MpcTlsLeader {
             record_layer,
             cf_vd_fut,
             sf_vd_fut,
+            cf_vd: None,
+            sf_vd: None,
             time: None,
             protocol_version: None,
             cipher_suite: None,
@@ -284,6 +294,8 @@ impl MpcTlsLeader {
             server_cert_details: None,
             server_key: None,
             server_kx_details: None,
+            tls13_server_signature: None,
+            tls13_cert_verify_transcript_hash: None,
         };
 
         Ok(())
@@ -292,7 +304,7 @@ impl MpcTlsLeader {
     /// Closes the connection.
     #[instrument(name = "close_connection", level = "debug", skip_all, err)]
     pub async fn close_connection(&mut self) -> Result<(), MpcTlsError> {
-        let State::Active {
+        let (
             mut ctx,
             vm,
             mut record_layer,
@@ -305,69 +317,175 @@ impl MpcTlsLeader {
             server_cert_details,
             server_key,
             server_kx_details,
-            ..
-        } = self.state.take()
-        else {
-            return Err(MpcTlsError::state(
-                "must be in active state to close connection",
-            ));
+            tls13_server_signature,
+            tls13_cert_verify_transcript_hash,
+        ) = match self.state.take() {
+            State::Active {
+                ctx,
+                vm,
+                record_layer,
+                cf_vd,
+                sf_vd,
+                time,
+                protocol_version,
+                client_random,
+                server_random,
+                server_cert_details,
+                server_key,
+                server_kx_details,
+                tls13_server_signature,
+                tls13_cert_verify_transcript_hash,
+                ..
+            } => (
+                ctx,
+                vm,
+                record_layer,
+                cf_vd,
+                sf_vd,
+                time,
+                protocol_version,
+                client_random,
+                server_random,
+                server_cert_details,
+                server_key,
+                server_kx_details,
+                tls13_server_signature,
+                tls13_cert_verify_transcript_hash,
+            ),
+            State::Handshake {
+                ctx,
+                vm,
+                record_layer,
+                cf_vd,
+                sf_vd,
+                time,
+                protocol_version,
+                client_random,
+                server_random,
+                server_cert_details,
+                server_key,
+                server_kx_details,
+                tls13_server_signature,
+                tls13_cert_verify_transcript_hash,
+                ..
+            } => (
+                ctx,
+                vm,
+                record_layer,
+                cf_vd,
+                sf_vd,
+                time.ok_or(MpcTlsError::state("handshake time not set"))?,
+                protocol_version.ok_or(MpcTlsError::state("protocol version not set"))?,
+                client_random,
+                server_random.ok_or(MpcTlsError::state("server random not set"))?,
+                server_cert_details.ok_or(MpcTlsError::state("server cert details not set"))?,
+                server_key.ok_or(MpcTlsError::state("server key not set"))?,
+                server_kx_details,
+                tls13_server_signature,
+                tls13_cert_verify_transcript_hash,
+            ),
+            _ => {
+                return Err(MpcTlsError::state(
+                    "must be in handshake or active state to close connection",
+                ))
+            }
         };
 
         debug!("closing connection");
 
         ctx.io_mut().send(Message::CloseConnection).await?;
 
-        debug!("committing to transcript");
-
-        let (sent_records, recv_records) = record_layer.commit(&mut ctx, vm.clone()).await?;
-
-        debug!("committed to transcript");
-
-        if !record_layer.is_empty() {
-            debug!("notifying client to process remaining messages");
-            self.notifier.set();
-        }
-
         let cf_vd = cf_vd.ok_or(MpcTlsError::state("client finished verify data not set"))?;
         let sf_vd = sf_vd.ok_or(MpcTlsError::state("server finished verify data not set"))?;
-
-        let version = match protocol_version {
-            ProtocolVersion::TLSv1_2 => TlsVersion::V1_2,
-            version => {
-                panic!("only TLS 1.2 should have been accepted: {version:?}")
-            }
-        };
 
         let server_cert_chain = server_cert_details
             .cert_chain()
             .iter()
             .map(|cert| CertificateDer(cert.0.clone()))
             .collect();
+        let server_ephemeral_key = server_key
+            .try_into()
+            .expect("only supported key scheme should have been accepted");
 
-        let mut sig_msg = Vec::new();
-        sig_msg.extend_from_slice(&client_random.0);
-        sig_msg.extend_from_slice(&server_random.0);
-        sig_msg.extend_from_slice(server_kx_details.kx_params());
+        let (
+            version,
+            server_signature,
+            handshake_data,
+            tls13_records_authenticated,
+            sent_records,
+            recv_records,
+        ) = match protocol_version {
+            ProtocolVersion::TLSv1_2 => {
+                debug!("committing tls12 transcript");
 
-        let server_signature_alg = verify_sig_determine_alg(
-            &server_cert_details.cert_chain()[0],
-            &sig_msg,
-            server_kx_details.kx_sig(),
-        )
-        .expect("only supported signature should have been accepted");
+                let (sent_records, recv_records) =
+                    record_layer.commit(&mut ctx, vm.clone()).await?;
 
-        let server_signature = ServerSignature {
-            alg: server_signature_alg.into(),
-            sig: server_kx_details.kx_sig().sig.0.clone(),
+                debug!("committed tls12 transcript");
+
+                if !record_layer.is_empty() {
+                    debug!("notifying client to process remaining messages");
+                    self.notifier.set();
+                }
+
+                let server_kx_details =
+                    server_kx_details.ok_or(MpcTlsError::state("server kx details not set"))?;
+
+                let mut sig_msg = Vec::new();
+                sig_msg.extend_from_slice(&client_random.0);
+                sig_msg.extend_from_slice(&server_random.0);
+                sig_msg.extend_from_slice(server_kx_details.kx_params());
+
+                let server_signature_alg = verify_sig_determine_alg(
+                    &server_cert_details.cert_chain()[0],
+                    &sig_msg,
+                    server_kx_details.kx_sig(),
+                )
+                .expect("only supported signature should have been accepted");
+
+                let server_signature = ServerSignature {
+                    alg: server_signature_alg.into(),
+                    sig: server_kx_details.kx_sig().sig.0.clone(),
+                };
+
+                (
+                    TlsVersion::V1_2,
+                    server_signature,
+                    CertBinding::V1_2(CertBindingV1_2 {
+                        client_random: client_random.0,
+                        server_random: server_random.0,
+                        server_ephemeral_key,
+                    }),
+                    false,
+                    sent_records,
+                    recv_records,
+                )
+            }
+            ProtocolVersion::TLSv1_3 => {
+                let tls13_server_signature = tls13_server_signature
+                    .ok_or(MpcTlsError::state("tls13 server signature not set"))?;
+                let tls13_cert_verify_transcript_hash = tls13_cert_verify_transcript_hash.ok_or(
+                    MpcTlsError::state("tls13 certificate verify transcript hash not set"),
+                )?;
+
+                (
+                    TlsVersion::V1_3,
+                    tls13_server_signature,
+                    CertBinding::V1_3(CertBindingV1_3 {
+                        server_ephemeral_key,
+                        cert_verify_transcript_hash: tls13_cert_verify_transcript_hash,
+                    }),
+                    true,
+                    std::mem::take(&mut self.tls13_sent_records),
+                    std::mem::take(&mut self.tls13_recv_records),
+                )
+            }
+            version => {
+                return Err(MpcTlsError::state(format!(
+                    "unsupported version: {version:?}"
+                )))
+            }
         };
-
-        let handshake_data = CertBinding::V1_2(CertBindingV1_2 {
-            client_random: client_random.0,
-            server_random: server_random.0,
-            server_ephemeral_key: server_key
-                .try_into()
-                .expect("only supported key scheme should have been accepted"),
-        });
 
         let transcript = TlsTranscript::new(
             time,
@@ -375,9 +493,10 @@ impl MpcTlsLeader {
             Some(server_cert_chain),
             Some(server_signature),
             handshake_data,
+            tls13_records_authenticated,
             VerifyData {
-                client_finished: cf_vd.to_vec(),
-                server_finished: sf_vd.to_vec(),
+                client_finished: cf_vd,
+                server_finished: sf_vd,
             },
             sent_records,
             recv_records,
@@ -601,6 +720,7 @@ impl Backend for MpcTlsLeader {
                 .try_lock()
                 .map_err(|_| MpcTlsError::other("VM lock is held"))?;
             ke.assign(&mut (*vm_lock)).map_err(MpcTlsError::hs)?;
+            vm_lock.execute_all(ctx).await.map_err(MpcTlsError::hs)?;
             ke.finalize().await.map_err(MpcTlsError::hs)?;
         }
 
@@ -645,6 +765,88 @@ impl Backend for MpcTlsLeader {
         Ok(())
     }
 
+    async fn set_tls13_server_cert_verify(
+        &mut self,
+        cert_verify: DigitallySignedStruct,
+        handshake_hash: Vec<u8>,
+    ) -> Result<(), BackendError> {
+        let transcript_hash: [u8; 32] = handshake_hash
+            .try_into()
+            .map_err(|_| MpcTlsError::hs("tls13 cert verify hash is not 32 bytes"))?;
+
+        let State::Handshake {
+            ctx,
+            protocol_version,
+            tls13_server_signature,
+            tls13_cert_verify_transcript_hash,
+            ..
+        } = &mut self.state
+        else {
+            return Err(MpcTlsError::state(
+                "must be in handshake state to set tls13 certificate verify details",
+            )
+            .into());
+        };
+
+        if protocol_version != &Some(ProtocolVersion::TLSv1_3) {
+            return Ok(());
+        }
+
+        *tls13_server_signature = Some(ServerSignature {
+            alg: tls13_signature_scheme(cert_verify.scheme)?,
+            sig: cert_verify.sig.0.clone(),
+        });
+        *tls13_cert_verify_transcript_hash = Some(transcript_hash);
+
+        ctx.io_mut()
+            .send(Message::Tls13CertVerify(Tls13CertVerify {
+                transcript_hash,
+            }))
+            .await
+            .map_err(MpcTlsError::from)?;
+
+        Ok(())
+    }
+
+    async fn set_tls13_handshake_hash(
+        &mut self,
+        handshake_hash: Vec<u8>,
+    ) -> Result<(), BackendError> {
+        let hash: [u8; 32] = handshake_hash
+            .try_into()
+            .map_err(|_| MpcTlsError::hs("tls13 handshake hash is not 32 bytes"))?;
+
+        let State::Handshake {
+            ctx,
+            vm,
+            tls13,
+            protocol_version,
+            ..
+        } = &mut self.state
+        else {
+            return Ok(());
+        };
+
+        if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
+            ctx.io_mut()
+                .send(Message::Tls13HandshakeHash(Tls13HandshakeHash {
+                    handshake_hash: hash,
+                }))
+                .await
+                .map_err(MpcTlsError::from)?;
+
+            let mut vm = vm
+                .try_lock()
+                .map_err(|_| MpcTlsError::hs("VM lock is held"))?;
+            tls13
+                .set_handshake_hash(ctx, &mut *vm, hash)
+                .await
+                .map_err(MpcTlsError::hs)?;
+        }
+
+        Ok(())
+    }
+
     async fn set_hs_hash_client_key_exchange(
         &mut self,
         _hash: Vec<u8>,
@@ -669,6 +871,11 @@ impl Backend for MpcTlsLeader {
         };
 
         if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
+            ctx.io_mut()
+                .send(Message::Tls13HelloHash(Tls13HelloHash { hello_hash: hash }))
+                .await
+                .map_err(MpcTlsError::from)?;
+
             let mut vm = vm
                 .try_lock()
                 .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -676,11 +883,6 @@ impl Backend for MpcTlsLeader {
                 .set_hello_hash(ctx, &mut *vm, hash)
                 .await
                 .map_err(MpcTlsError::hs)?;
-
-            ctx.io_mut()
-                .send(Message::Tls13HelloHash(Tls13HelloHash { hello_hash: hash }))
-                .await
-                .map_err(MpcTlsError::from)?;
         }
 
         Ok(())
@@ -697,10 +899,12 @@ impl Backend for MpcTlsLeader {
             State::Handshake {
                 ctx,
                 tls13,
+                sf_vd,
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             } => {
                 let vd = tls13.server_finished_vd(hash).map_err(MpcTlsError::hs)?;
+                *sf_vd = Some(vd.to_vec());
                 ctx.io_mut()
                     .send(Message::Tls13ServerFinishedVd(Tls13ServerFinishedVd {
                         verify_data: vd,
@@ -741,7 +945,7 @@ impl Backend for MpcTlsLeader {
                     .map_err(MpcTlsError::hs)?
                     .ok_or_else(|| MpcTlsError::hs("sf_vd is not decoded"))?;
 
-                *sf_vd = Some(vd);
+                *sf_vd = Some(vd.to_vec());
 
                 Ok(vd.to_vec())
             }
@@ -762,19 +966,13 @@ impl Backend for MpcTlsLeader {
         match &mut self.state {
             State::Handshake {
                 ctx,
-                vm,
                 tls13,
+                cf_vd,
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             } => {
-                let mut vm = vm
-                    .try_lock()
-                    .map_err(|_| MpcTlsError::hs("VM lock is held"))?;
-                tls13
-                    .set_handshake_hash(ctx, &mut *vm, hash)
-                    .await
-                    .map_err(MpcTlsError::hs)?;
                 let vd = tls13.client_finished_vd(hash).map_err(MpcTlsError::hs)?;
+                *cf_vd = Some(vd.to_vec());
                 ctx.io_mut()
                     .send(Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
                         handshake_hash: hash,
@@ -816,7 +1014,7 @@ impl Backend for MpcTlsLeader {
                     .map_err(MpcTlsError::hs)?
                     .ok_or_else(|| MpcTlsError::hs("cf_vd is not decoded"))?;
 
-                *cf_vd = Some(vd);
+                *cf_vd = Some(vd.to_vec());
 
                 Ok(vd.to_vec())
             }
@@ -838,6 +1036,8 @@ impl Backend for MpcTlsLeader {
             mut record_layer,
             cf_vd_fut,
             sf_vd_fut,
+            cf_vd,
+            sf_vd,
             time,
             protocol_version,
             client_random,
@@ -845,6 +1045,8 @@ impl Backend for MpcTlsLeader {
             server_cert_details,
             server_key,
             server_kx_details,
+            tls13_server_signature,
+            tls13_cert_verify_transcript_hash,
             ..
         } = self.state.take()
         else {
@@ -863,56 +1065,85 @@ impl Backend for MpcTlsLeader {
         let server_cert_details =
             server_cert_details.ok_or_else(|| MpcTlsError::hs("server cert details is not set"))?;
         let server_key = server_key.ok_or_else(|| MpcTlsError::hs("server key is not set"))?;
-        let server_kx_details =
-            server_kx_details.ok_or_else(|| MpcTlsError::hs("server kx details is not set"))?;
 
-        ke.set_server_key(
-            p256::PublicKey::from_sec1_bytes(&server_key.key).map_err(MpcTlsError::hs)?,
-        )
-        .map_err(|err| BackendError::InvalidState(err.to_string()))?;
+        if protocol_version != ProtocolVersion::TLSv1_3 {
+            let server_kx_details =
+                server_kx_details.ok_or_else(|| MpcTlsError::hs("server kx details is not set"))?;
 
-        ke.compute_shares(&mut ctx).await.map_err(MpcTlsError::hs)?;
+            ke.set_server_key(
+                p256::PublicKey::from_sec1_bytes(&server_key.key).map_err(MpcTlsError::hs)?,
+            )
+            .map_err(|err| BackendError::InvalidState(err.to_string()))?;
 
-        {
-            let mut vm_lock = vm
-                .try_lock()
-                .map_err(|_| MpcTlsError::other("VM lock is held"))?;
+            ke.compute_shares(&mut ctx).await.map_err(MpcTlsError::hs)?;
 
-            ke.assign(&mut (*vm_lock)).map_err(MpcTlsError::hs)?;
+            {
+                let mut vm_lock = vm
+                    .try_lock()
+                    .map_err(|_| MpcTlsError::other("VM lock is held"))?;
 
-            while prf.wants_flush() {
-                prf.flush(&mut *vm_lock).map_err(MpcTlsError::hs)?;
-                vm_lock
-                    .execute_all(&mut ctx)
-                    .await
-                    .map_err(MpcTlsError::hs)?;
+                ke.assign(&mut (*vm_lock)).map_err(MpcTlsError::hs)?;
+
+                while prf.wants_flush() {
+                    prf.flush(&mut *vm_lock).map_err(MpcTlsError::hs)?;
+                    vm_lock
+                        .execute_all(&mut ctx)
+                        .await
+                        .map_err(MpcTlsError::hs)?;
+                }
+
+                ke.finalize().await.map_err(MpcTlsError::hs)?;
+                record_layer.setup(&mut ctx).await?;
             }
 
-            ke.finalize().await.map_err(MpcTlsError::hs)?;
-            record_layer.setup(&mut ctx).await?;
+            debug!("encryption prepared");
+
+            self.state = State::Active {
+                ctx,
+                vm,
+                _ke: ke,
+                prf,
+                tls13,
+                record_layer,
+                cf_vd_fut,
+                sf_vd_fut,
+                cf_vd,
+                sf_vd,
+                time,
+                protocol_version,
+                client_random,
+                server_random,
+                server_cert_details,
+                server_key,
+                server_kx_details: Some(server_kx_details),
+                tls13_server_signature,
+                tls13_cert_verify_transcript_hash,
+            };
+        } else {
+            debug!("tls13 encryption prepared");
+
+            self.state = State::Active {
+                ctx,
+                vm,
+                _ke: ke,
+                prf,
+                tls13,
+                record_layer,
+                cf_vd_fut,
+                sf_vd_fut,
+                cf_vd,
+                sf_vd,
+                time,
+                protocol_version,
+                client_random,
+                server_random,
+                server_cert_details,
+                server_key,
+                server_kx_details: None,
+                tls13_server_signature,
+                tls13_cert_verify_transcript_hash,
+            };
         }
-
-        debug!("encryption prepared");
-
-        self.state = State::Active {
-            ctx,
-            vm,
-            _ke: ke,
-            prf,
-            tls13,
-            record_layer,
-            cf_vd_fut,
-            sf_vd_fut,
-            cf_vd: None,
-            sf_vd: None,
-            time,
-            protocol_version,
-            client_random,
-            server_random,
-            server_cert_details,
-            server_key,
-            server_kx_details,
-        };
 
         Ok(())
     }
@@ -921,11 +1152,13 @@ impl Backend for MpcTlsLeader {
     async fn push_incoming(&mut self, msg: OpaqueMessage) -> Result<(), BackendError> {
         match &mut self.state {
             State::Handshake {
+                ctx,
                 tls13,
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             }
             | State::Active {
+                ctx,
                 tls13,
                 protocol_version: ProtocolVersion::TLSv1_3,
                 ..
@@ -933,7 +1166,14 @@ impl Backend for MpcTlsLeader {
                 let epoch = self.tls13_decrypt_epoch.ok_or_else(|| {
                     MpcTlsError::hs("tls13 decrypt epoch was not configured before decryption")
                 })?;
-                let plain = tls13.decrypt_record(epoch, msg).map_err(MpcTlsError::hs)?;
+                let (plain, record) = tls13.decrypt_record(epoch, msg).map_err(MpcTlsError::hs)?;
+                ctx.io_mut()
+                    .send(Message::Tls13RecvRecord(Tls13RecordMessage {
+                        record: record.clone(),
+                    }))
+                    .await
+                    .map_err(MpcTlsError::from)?;
+                self.tls13_recv_records.push(record);
                 self.tls13_incoming.push_back(plain);
                 return Ok(());
             }
@@ -1048,11 +1288,13 @@ impl Backend for MpcTlsLeader {
     async fn push_outgoing(&mut self, msg: PlainMessage) -> Result<(), BackendError> {
         match &mut self.state {
             State::Handshake {
+                ctx,
                 tls13,
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             }
             | State::Active {
+                ctx,
                 tls13,
                 protocol_version: ProtocolVersion::TLSv1_3,
                 ..
@@ -1060,7 +1302,14 @@ impl Backend for MpcTlsLeader {
                 let epoch = self.tls13_encrypt_epoch.ok_or_else(|| {
                     MpcTlsError::hs("tls13 encrypt epoch was not configured before encryption")
                 })?;
-                let opaque = tls13.encrypt_record(epoch, msg).map_err(MpcTlsError::hs)?;
+                let (opaque, record) = tls13.encrypt_record(epoch, msg).map_err(MpcTlsError::hs)?;
+                ctx.io_mut()
+                    .send(Message::Tls13SendRecord(Tls13RecordMessage {
+                        record: record.clone(),
+                    }))
+                    .await
+                    .map_err(MpcTlsError::from)?;
+                self.tls13_sent_records.push(record);
                 self.tls13_outgoing.push_back(opaque);
                 return Ok(());
             }
@@ -1203,6 +1452,13 @@ impl Backend for MpcTlsLeader {
     #[instrument(level = "debug", skip_all, err)]
     async fn flush(&mut self) -> Result<(), BackendError> {
         let (ctx, vm, record_layer) = match &mut self.state {
+            State::Handshake {
+                protocol_version: Some(ProtocolVersion::TLSv1_3),
+                ..
+            } => {
+                debug!("tls13 record layer is not ready, skipping flush");
+                return Ok(());
+            }
             State::Handshake { .. } => {
                 warn!("record layer is not ready, skipping flush");
                 return Ok(());
@@ -1264,22 +1520,6 @@ impl Backend for MpcTlsLeader {
     }
 
     async fn server_closed(&mut self) -> Result<(), BackendError> {
-        if let State::Handshake {
-            ctx,
-            protocol_version: Some(ProtocolVersion::TLSv1_3),
-            ..
-        } = &mut self.state
-        {
-            ctx.io_mut()
-                .send(Message::CloseConnection)
-                .await
-                .map_err(MpcTlsError::from)?;
-
-            return Err(BackendError::InternalError(
-                "tls13 transcript export is not implemented yet".into(),
-            ));
-        }
-
         self.close_connection().await.map_err(BackendError::from)
     }
 
@@ -1305,6 +1545,27 @@ impl Backend for MpcTlsLeader {
                 None
             }
         }
+    }
+}
+
+fn tls13_signature_scheme(
+    scheme: tls_core::msgs::enums::SignatureScheme,
+) -> Result<SignatureAlgorithm, BackendError> {
+    use tls_core::msgs::enums::SignatureScheme as Scheme;
+
+    match scheme {
+        Scheme::ECDSA_NISTP256_SHA256 => Ok(SignatureAlgorithm::ECDSA_NISTP256_SHA256),
+        Scheme::ECDSA_NISTP384_SHA384 => Ok(SignatureAlgorithm::ECDSA_NISTP384_SHA384),
+        Scheme::ED25519 => Ok(SignatureAlgorithm::ED25519),
+        Scheme::RSA_PKCS1_SHA256 => Ok(SignatureAlgorithm::RSA_PKCS1_2048_8192_SHA256),
+        Scheme::RSA_PKCS1_SHA384 => Ok(SignatureAlgorithm::RSA_PKCS1_2048_8192_SHA384),
+        Scheme::RSA_PKCS1_SHA512 => Ok(SignatureAlgorithm::RSA_PKCS1_2048_8192_SHA512),
+        Scheme::RSA_PSS_SHA256 => Ok(SignatureAlgorithm::RSA_PSS_2048_8192_SHA256_LEGACY_KEY),
+        Scheme::RSA_PSS_SHA384 => Ok(SignatureAlgorithm::RSA_PSS_2048_8192_SHA384_LEGACY_KEY),
+        Scheme::RSA_PSS_SHA512 => Ok(SignatureAlgorithm::RSA_PSS_2048_8192_SHA512_LEGACY_KEY),
+        scheme => Err(BackendError::InvalidConfig(format!(
+            "unsupported tls13 signature scheme: {scheme:?}"
+        ))),
     }
 }
 
@@ -1337,6 +1598,8 @@ enum State {
         record_layer: RecordLayer,
         cf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
         sf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
+        cf_vd: Option<Vec<u8>>,
+        sf_vd: Option<Vec<u8>>,
         time: Option<u64>,
         protocol_version: Option<ProtocolVersion>,
         cipher_suite: Option<CipherSuite>,
@@ -1345,6 +1608,8 @@ enum State {
         server_cert_details: Option<ServerCertDetails>,
         server_key: Option<PublicKey>,
         server_kx_details: Option<ServerKxDetails>,
+        tls13_server_signature: Option<ServerSignature>,
+        tls13_cert_verify_transcript_hash: Option<[u8; 32]>,
     },
     Active {
         ctx: Context,
@@ -1356,15 +1621,17 @@ enum State {
         record_layer: RecordLayer,
         cf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
         sf_vd_fut: DecodeFutureTyped<BitVec, [u8; 12]>,
-        cf_vd: Option<[u8; 12]>,
-        sf_vd: Option<[u8; 12]>,
+        cf_vd: Option<Vec<u8>>,
+        sf_vd: Option<Vec<u8>>,
         time: u64,
         protocol_version: ProtocolVersion,
         client_random: Random,
         server_random: Random,
         server_cert_details: ServerCertDetails,
         server_key: PublicKey,
-        server_kx_details: ServerKxDetails,
+        server_kx_details: Option<ServerKxDetails>,
+        tls13_server_signature: Option<ServerSignature>,
+        tls13_cert_verify_transcript_hash: Option<[u8; 32]>,
     },
     Closed {
         ctx: Context,

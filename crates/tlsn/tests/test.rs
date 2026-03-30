@@ -8,7 +8,7 @@ use tlsn::{
         tls_commit::{TlsCommitConfig, mpc::MpcTlsConfig},
         verifier::VerifierConfig,
     },
-    connection::ServerName,
+    connection::{ServerName, TlsVersion},
     hash::HashAlgId,
     prover::Prover,
     transcript::{Direction, Transcript, TranscriptCommitConfig, TranscriptCommitmentKind},
@@ -32,7 +32,7 @@ const MAX_RECV_RECORDS: usize = 6;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
-async fn test() {
+async fn test_tls13() {
     tracing_subscriber::fmt::init();
 
     let (socket_0, socket_1) = tokio::io::duplex(2 << 23);
@@ -129,6 +129,7 @@ async fn run_prover(prover: Prover) -> (Transcript, ProverOutput) {
     let _ = server_task.await.unwrap();
 
     let mut prover = prover_task.await.unwrap().unwrap();
+    assert_eq!(*prover.tls_transcript().version(), TlsVersion::V1_3);
     let sent_tx_len = prover.transcript().sent().len();
     let recv_tx_len = prover.transcript().received().len();
 

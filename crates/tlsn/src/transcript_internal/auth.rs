@@ -81,6 +81,23 @@ pub(crate) fn prove_plaintext<'a>(
     Ok(plaintext_refs)
 }
 
+pub(crate) fn commit_public_plaintext(
+    vm: &mut dyn Vm<Binary>,
+    plaintext: &[u8],
+    ranges: &RangeSet<usize>,
+) -> Result<ReferenceMap, PlaintextAuthError> {
+    let plaintext_refs = alloc_plaintext(vm, ranges)?;
+
+    for (range, slice) in plaintext_refs.iter() {
+        vm.mark_public(*slice).map_err(PlaintextAuthError::vm)?;
+        vm.assign(*slice, plaintext[range].to_vec())
+            .map_err(PlaintextAuthError::vm)?;
+        vm.commit(*slice).map_err(PlaintextAuthError::vm)?;
+    }
+
+    Ok(plaintext_refs)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_plaintext<'a>(
     vm: &mut dyn Vm<Binary>,

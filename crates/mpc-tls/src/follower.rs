@@ -1,5 +1,8 @@
 use crate::{
-    msg::{Message, StartHandshake, Tls13ClientFinishedVd, Tls13HelloHash, Tls13ServerFinishedVd},
+    msg::{
+        Message, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd, Tls13HandshakeHash,
+        Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
+    },
     record_layer::{aead::MpcAesGcm, RecordLayer},
     tls13::Tls13KeyState,
     Config, MpcTlsError, Role, SessionKeys, Vm,
@@ -23,8 +26,8 @@ use serio::stream::IoStreamExt;
 use std::mem;
 use tls_core::msgs::enums::{NamedGroup, ProtocolVersion};
 use tlsn_core::{
-    connection::{CertBinding, CertBindingV1_2, TlsVersion, VerifyData},
-    transcript::TlsTranscript,
+    connection::{CertBinding, CertBindingV1_2, CertBindingV1_3, TlsVersion, VerifyData},
+    transcript::{Record, TlsTranscript},
 };
 use tracing::{debug, instrument};
 
@@ -243,8 +246,11 @@ impl MpcTlsFollower {
         let mut client_random = None;
         let mut server_random = None;
         let mut server_key = None;
+        let mut tls13_cert_verify_transcript_hash = None;
         let mut cf_vd: Option<Vec<u8>> = None;
         let mut sf_vd: Option<Vec<u8>> = None;
+        let mut tls13_sent_records: Vec<Record> = Vec::new();
+        let mut tls13_recv_records: Vec<Record> = Vec::new();
         loop {
             let msg: Message = self.ctx.io_mut().expect_next().await?;
             match msg {
@@ -306,6 +312,9 @@ impl MpcTlsFollower {
 
                     ke.compute_shares(&mut self.ctx).await?;
                     ke.assign(&mut (*vm))?;
+                    vm.execute_all(&mut self.ctx)
+                        .await
+                        .map_err(MpcTlsError::hs)?;
 
                     ke.finalize().await?;
 
@@ -381,14 +390,7 @@ impl MpcTlsFollower {
                         .set_hello_hash(&mut self.ctx, &mut *vm, hello_hash)
                         .await?;
                 }
-                Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
-                    handshake_hash,
-                    verify_data,
-                }) => {
-                    if cf_vd.is_some() {
-                        return Err(MpcTlsError::hs("client finished VD already computed"));
-                    }
-
+                Message::Tls13HandshakeHash(Tls13HandshakeHash { handshake_hash }) => {
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -396,6 +398,14 @@ impl MpcTlsFollower {
                     tls13
                         .set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash)
                         .await?;
+                }
+                Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
+                    handshake_hash: _,
+                    verify_data,
+                }) => {
+                    if cf_vd.is_some() {
+                        return Err(MpcTlsError::hs("client finished VD already computed"));
+                    }
                     cf_vd = Some(verify_data.to_vec());
                 }
                 Message::Tls13ServerFinishedVd(Tls13ServerFinishedVd { verify_data }) => {
@@ -404,6 +414,15 @@ impl MpcTlsFollower {
                     }
 
                     sf_vd = Some(verify_data.to_vec());
+                }
+                Message::Tls13CertVerify(Tls13CertVerify { transcript_hash }) => {
+                    tls13_cert_verify_transcript_hash = Some(transcript_hash);
+                }
+                Message::Tls13SendRecord(Tls13RecordMessage { record }) => {
+                    tls13_sent_records.push(record);
+                }
+                Message::Tls13RecvRecord(Tls13RecordMessage { record }) => {
+                    tls13_recv_records.push(record);
                 }
                 Message::Encrypt(encrypt) => {
                     record_layer
@@ -429,7 +448,9 @@ impl MpcTlsFollower {
                         .map_err(MpcTlsError::record_layer)?;
                 }
                 Message::StartTraffic => {
-                    record_layer.start_traffic();
+                    if protocol_version != Some(ProtocolVersion::TLSv1_3) {
+                        record_layer.start_traffic();
+                    }
                 }
                 Message::Flush { is_decrypting } => {
                     record_layer
@@ -443,39 +464,62 @@ impl MpcTlsFollower {
             }
         }
 
-        if protocol_version == Some(ProtocolVersion::TLSv1_3) {
-            return Err(MpcTlsError::other(
-                "tls13 transcript export is not implemented yet",
-            ));
-        }
-
-        debug!("committing");
-
-        let (sent_records, recv_records) = record_layer.commit(&mut self.ctx, vm).await?;
-
-        debug!("committed");
-
         let time = time.ok_or(MpcTlsError::hs("time was not set"))?;
         let server_key = server_key.ok_or(MpcTlsError::hs("server key not set"))?;
-        let client_random = client_random.ok_or(MpcTlsError::hs("client random not set"))?;
-        let server_random = server_random.ok_or(MpcTlsError::hs("client random not set"))?;
         let cf_vd = cf_vd.ok_or(MpcTlsError::hs("client finished VD not computed"))?;
         let sf_vd = sf_vd.ok_or(MpcTlsError::hs("server finished VD not computed"))?;
+        let server_ephemeral_key = server_key
+            .try_into()
+            .expect("only supported key scheme should have been accepted");
 
-        let handshake_data = CertBinding::V1_2(CertBindingV1_2 {
-            client_random,
-            server_random,
-            server_ephemeral_key: server_key
-                .try_into()
-                .expect("only supported key scheme should have been accepted"),
-        });
+        let (version, handshake_data, tls13_records_authenticated, sent_records, recv_records) =
+            if protocol_version == Some(ProtocolVersion::TLSv1_3) {
+                let transcript_hash = tls13_cert_verify_transcript_hash.ok_or(MpcTlsError::hs(
+                    "tls13 certificate verify transcript hash not set",
+                ))?;
+
+                (
+                    TlsVersion::V1_3,
+                    CertBinding::V1_3(CertBindingV1_3 {
+                        server_ephemeral_key,
+                        cert_verify_transcript_hash: transcript_hash,
+                    }),
+                    true,
+                    tls13_sent_records,
+                    tls13_recv_records,
+                )
+            } else {
+                debug!("committing");
+
+                let (sent_records, recv_records) = record_layer.commit(&mut self.ctx, vm).await?;
+
+                debug!("committed");
+
+                let client_random =
+                    client_random.ok_or(MpcTlsError::hs("client random not set"))?;
+                let server_random =
+                    server_random.ok_or(MpcTlsError::hs("client random not set"))?;
+
+                (
+                    TlsVersion::V1_2,
+                    CertBinding::V1_2(CertBindingV1_2 {
+                        client_random,
+                        server_random,
+                        server_ephemeral_key,
+                    }),
+                    false,
+                    sent_records,
+                    recv_records,
+                )
+            };
 
         let transcript = TlsTranscript::new(
             time,
-            TlsVersion::V1_2,
+            version,
             None,
             None,
             handshake_data,
+            tls13_records_authenticated,
             VerifyData {
                 client_finished: cf_vd,
                 server_finished: sf_vd,

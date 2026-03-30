@@ -2,11 +2,13 @@ use mpc_tls::SessionKeys;
 use mpz_common::Context;
 use mpz_memory_core::binary::Binary;
 use mpz_vm_core::Vm;
+use rangeset::iter::RangeIterator;
+use rangeset::ops::Set;
 use rangeset::set::RangeSet;
 use tlsn_core::{
     VerifierOutput,
     config::prove::ProveRequest,
-    connection::{HandshakeData, ServerName},
+    connection::{HandshakeData, ServerName, TlsVersion},
     transcript::{
         ContentType, Direction, PartialTranscript, Record, TlsTranscript, TranscriptCommitment,
     },
@@ -15,7 +17,11 @@ use tlsn_core::{
 
 use crate::{
     Error, Result,
-    transcript_internal::{TranscriptRefs, auth::verify_plaintext, commit::hash::verify_hash},
+    transcript_internal::{
+        TranscriptRefs,
+        auth::{commit_public_plaintext, verify_plaintext},
+        commit::hash::verify_hash,
+    },
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -31,6 +37,19 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
 ) -> Result<VerifierOutput> {
     let ciphertext_sent = collect_ciphertext(tls_transcript.sent());
     let ciphertext_recv = collect_ciphertext(tls_transcript.recv());
+    let full_transcript = (tls_transcript.version() == &TlsVersion::V1_3)
+        .then(|| tls_transcript.to_transcript())
+        .transpose()
+        .map_err(|e| {
+            Error::internal()
+                .with_msg("verification failed: tls13 transcript is incomplete")
+                .with_source(e)
+        })?;
+    let (expected_sent_len, expected_recv_len) = if let Some(full_transcript) = &full_transcript {
+        full_transcript.len()
+    } else {
+        (ciphertext_sent.len(), ciphertext_recv.len())
+    };
 
     let transcript = if let Some((auth_sent, auth_recv)) = request.reveal() {
         let Some(transcript) = transcript else {
@@ -39,8 +58,8 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
             ));
         };
 
-        if transcript.len_sent() != ciphertext_sent.len()
-            || transcript.len_received() != ciphertext_recv.len()
+        if transcript.len_sent() != expected_sent_len
+            || transcript.len_received() != expected_recv_len
         {
             return Err(
                 Error::internal().with_msg("verification failed: transcript length mismatch")
@@ -59,10 +78,16 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
 
         transcript
     } else {
-        PartialTranscript::new(ciphertext_sent.len(), ciphertext_recv.len())
+        PartialTranscript::new(expected_sent_len, expected_recv_len)
     };
 
     let server_name = if let Some((name, cert_data)) = handshake {
+        if &cert_data.binding != tls_transcript.certificate_binding() {
+            return Err(
+                Error::internal().with_msg("verification failed: handshake binding mismatch")
+            );
+        }
+
         cert_data
             .verify(
                 cert_verifier,
@@ -91,42 +116,98 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
             });
     }
 
-    let (sent_refs, sent_proof) = verify_plaintext(
-        vm,
-        keys.client_write_key,
-        keys.client_write_iv,
-        transcript.sent_unsafe(),
-        &ciphertext_sent,
-        tls_transcript
-            .sent()
-            .iter()
-            .filter(|record| record.typ == ContentType::ApplicationData),
-        transcript.sent_authed(),
-        &commit_sent,
-    )
-    .map_err(|e| {
-        Error::internal()
-            .with_msg("verification failed during sent plaintext verification")
-            .with_source(e)
-    })?;
-    let (recv_refs, recv_proof) = verify_plaintext(
-        vm,
-        keys.server_write_key,
-        keys.server_write_iv,
-        transcript.received_unsafe(),
-        &ciphertext_recv,
-        tls_transcript
-            .recv()
-            .iter()
-            .filter(|record| record.typ == ContentType::ApplicationData),
-        transcript.received_authed(),
-        &commit_recv,
-    )
-    .map_err(|e| {
-        Error::internal()
-            .with_msg("verification failed during received plaintext verification")
-            .with_source(e)
-    })?;
+    if let Some(full_transcript) = &full_transcript {
+        for range in transcript.sent_authed().iter() {
+            if transcript.sent_unsafe()[range.clone()] != full_transcript.sent()[range] {
+                return Err(Error::internal()
+                    .with_msg("verification failed: sent transcript reveal mismatch"));
+            }
+        }
+
+        for range in transcript.received_authed().iter() {
+            if transcript.received_unsafe()[range.clone()] != full_transcript.received()[range] {
+                return Err(Error::internal()
+                    .with_msg("verification failed: received transcript reveal mismatch"));
+            }
+        }
+    }
+
+    let (sent_refs, sent_proof) = if tls_transcript.version() == &TlsVersion::V1_3 {
+        let full_transcript = full_transcript
+            .as_ref()
+            .expect("tls13 transcript should be present");
+        (
+            commit_public_plaintext(
+                vm,
+                full_transcript.sent(),
+                &commit_sent.union(transcript.sent_authed()).into_set(),
+            )
+            .map_err(|e| {
+                Error::internal()
+                    .with_msg("verification failed during sent plaintext verification")
+                    .with_source(e)
+            })?,
+            None,
+        )
+    } else {
+        let (refs, proof) = verify_plaintext(
+            vm,
+            keys.client_write_key,
+            keys.client_write_iv,
+            transcript.sent_unsafe(),
+            &ciphertext_sent,
+            tls_transcript
+                .sent()
+                .iter()
+                .filter(|record| record.typ == ContentType::ApplicationData),
+            transcript.sent_authed(),
+            &commit_sent,
+        )
+        .map_err(|e| {
+            Error::internal()
+                .with_msg("verification failed during sent plaintext verification")
+                .with_source(e)
+        })?;
+        (refs, Some(proof))
+    };
+    let (recv_refs, recv_proof) = if tls_transcript.version() == &TlsVersion::V1_3 {
+        let full_transcript = full_transcript
+            .as_ref()
+            .expect("tls13 transcript should be present");
+        (
+            commit_public_plaintext(
+                vm,
+                full_transcript.received(),
+                &commit_recv.union(transcript.received_authed()).into_set(),
+            )
+            .map_err(|e| {
+                Error::internal()
+                    .with_msg("verification failed during received plaintext verification")
+                    .with_source(e)
+            })?,
+            None,
+        )
+    } else {
+        let (refs, proof) = verify_plaintext(
+            vm,
+            keys.server_write_key,
+            keys.server_write_iv,
+            transcript.received_unsafe(),
+            &ciphertext_recv,
+            tls_transcript
+                .recv()
+                .iter()
+                .filter(|record| record.typ == ContentType::ApplicationData),
+            transcript.received_authed(),
+            &commit_recv,
+        )
+        .map_err(|e| {
+            Error::internal()
+                .with_msg("verification failed during received plaintext verification")
+                .with_source(e)
+        })?;
+        (refs, Some(proof))
+    };
 
     let transcript_refs = TranscriptRefs {
         sent: sent_refs,
@@ -153,16 +234,20 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
             .with_source(e)
     })?;
 
-    sent_proof.verify().map_err(|e| {
-        Error::internal()
-            .with_msg("verification failed: sent plaintext proof invalid")
-            .with_source(e)
-    })?;
-    recv_proof.verify().map_err(|e| {
-        Error::internal()
-            .with_msg("verification failed: received plaintext proof invalid")
-            .with_source(e)
-    })?;
+    if let Some(sent_proof) = sent_proof {
+        sent_proof.verify().map_err(|e| {
+            Error::internal()
+                .with_msg("verification failed: sent plaintext proof invalid")
+                .with_source(e)
+        })?;
+    }
+    if let Some(recv_proof) = recv_proof {
+        recv_proof.verify().map_err(|e| {
+            Error::internal()
+                .with_msg("verification failed: received plaintext proof invalid")
+                .with_source(e)
+        })?;
+    }
 
     if let Some(hash_commitments) = hash_commitments {
         for commitment in hash_commitments.try_recv().map_err(|e| {

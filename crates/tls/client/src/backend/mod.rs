@@ -12,7 +12,7 @@ use tls_core::{
     key::PublicKey,
     msgs::{
         enums::{CipherSuite, NamedGroup, ProtocolVersion},
-        handshake::Random,
+        handshake::{DigitallySignedStruct, Random},
         message::{OpaqueMessage, PlainMessage},
     },
     suites::SupportedCipherSuite,
@@ -102,6 +102,23 @@ pub trait Backend: Send {
         &mut self,
         kx_details: ServerKxDetails,
     ) -> Result<(), BackendError>;
+    /// Sets TLS 1.3 `CertificateVerify` details.
+    async fn set_tls13_server_cert_verify(
+        &mut self,
+        _cert_verify: DigitallySignedStruct,
+        _handshake_hash: Vec<u8>,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    /// Signals the TLS 1.3 handshake transcript hash taken immediately after
+    /// the server Finished message so the backend can derive application keys.
+    async fn set_tls13_handshake_hash(
+        &mut self,
+        _handshake_hash: Vec<u8>,
+    ) -> Result<(), BackendError> {
+        Ok(())
+    }
     /// Sets handshake hash at ClientKeyExchange for EMS.
     async fn set_hs_hash_client_key_exchange(&mut self, hash: Vec<u8>) -> Result<(), BackendError>;
     /// Sets handshake hash at ServerHello.

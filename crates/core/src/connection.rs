@@ -190,7 +190,7 @@ impl From<tls_core::verify::SignatureAlgorithm> for SignatureAlgorithm {
 }
 
 /// Server's signature of the key exchange parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerSignature {
     /// Signature algorithm.
     pub alg: SignatureAlgorithm,
@@ -258,7 +258,7 @@ pub struct TranscriptLength {
 }
 
 /// TLS 1.2 certificate binding.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CertBindingV1_2 {
     /// Client random.
     pub client_random: [u8; 32],
@@ -268,18 +268,29 @@ pub struct CertBindingV1_2 {
     pub server_ephemeral_key: ServerEphemKey,
 }
 
+/// TLS 1.3 certificate binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CertBindingV1_3 {
+    /// Server's ephemeral public key.
+    pub server_ephemeral_key: ServerEphemKey,
+    /// Transcript hash used by the server `CertificateVerify` signature.
+    pub cert_verify_transcript_hash: [u8; 32],
+}
+
 /// TLS certificate binding.
 ///
 /// This is the data that the server signs using its public key in the
 /// certificate it presents during the TLS handshake. This provides a binding
 /// between the server's identity and the ephemeral keys used to authenticate
 /// the TLS session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum CertBinding {
     /// TLS 1.2 certificate binding.
     V1_2(CertBindingV1_2),
+    /// TLS 1.3 certificate binding.
+    V1_3(CertBindingV1_3),
 }
 
 /// Verify data from the TLS handshake finished messages.
@@ -318,19 +329,37 @@ impl HandshakeData {
         server_ephemeral_key: &ServerEphemKey,
         server_name: &ServerName,
     ) -> Result<(), HandshakeVerificationError> {
-        #[allow(irrefutable_let_patterns)]
-        let CertBinding::V1_2(CertBindingV1_2 {
-            client_random,
-            server_random,
-            server_ephemeral_key: expected_server_ephemeral_key,
-        }) = &self.binding
-        else {
-            unreachable!("only TLS 1.2 is implemented")
-        };
+        let message = match &self.binding {
+            CertBinding::V1_2(CertBindingV1_2 {
+                client_random,
+                server_random,
+                server_ephemeral_key: expected_server_ephemeral_key,
+            }) => {
+                if server_ephemeral_key != expected_server_ephemeral_key {
+                    return Err(HandshakeVerificationError::InvalidServerEphemeralKey);
+                }
 
-        if server_ephemeral_key != expected_server_ephemeral_key {
-            return Err(HandshakeVerificationError::InvalidServerEphemeralKey);
-        }
+                let mut message = Vec::new();
+                message.extend_from_slice(client_random);
+                message.extend_from_slice(server_random);
+                message.extend_from_slice(&server_ephemeral_key.kx_params());
+                message
+            }
+            CertBinding::V1_3(CertBindingV1_3 {
+                server_ephemeral_key: expected_server_ephemeral_key,
+                cert_verify_transcript_hash,
+            }) => {
+                if server_ephemeral_key != expected_server_ephemeral_key {
+                    return Err(HandshakeVerificationError::InvalidServerEphemeralKey);
+                }
+
+                let mut message = Vec::with_capacity(64 + 34 + cert_verify_transcript_hash.len());
+                message.resize(64, 0x20);
+                message.extend_from_slice(b"TLS 1.3, server CertificateVerify\x00");
+                message.extend_from_slice(cert_verify_transcript_hash);
+                message
+            }
+        };
 
         let (end_entity, intermediates) = self
             .certs
@@ -344,11 +373,6 @@ impl HandshakeData {
             .map_err(HandshakeVerificationError::ServerCert)?;
 
         // Verify the signature matches the certificate and key exchange parameters.
-        let mut message = Vec::new();
-        message.extend_from_slice(client_random);
-        message.extend_from_slice(server_random);
-        message.extend_from_slice(&server_ephemeral_key.kx_params());
-
         use webpki::ring as alg;
         let sig_alg = match self.sig.alg {
             SignatureAlgorithm::ECDSA_NISTP256_SHA256 => alg::ECDSA_P256_SHA256,
@@ -590,7 +614,10 @@ mod tests {
         #[case] mut data: ConnectionFixture,
     ) {
         let CertBinding::V1_2(CertBindingV1_2 { client_random, .. }) =
-            &mut data.server_cert_data.binding;
+            &mut data.server_cert_data.binding
+        else {
+            panic!("expected tls1.2 binding");
+        };
         client_random[31] = client_random[31].wrapping_add(1);
 
         let err = data.server_cert_data.verify(

@@ -75,6 +75,7 @@ impl TranscriptGenerator {
             Some(server_cert_chain),
             Some(server_signature),
             cert_binding,
+            false,
             verify_data,
             sent,
             recv,
