@@ -36,6 +36,37 @@ at your option.
 
 For evaluation, we recommend using [tagged releases](https://github.com/tlsnotary/tlsn/releases) rather than the latest `main` branch, as the project is under active development.
 
+## Fork Contribution Scope
+
+This fork currently carries a TLS 1.3 workstream on top of upstream
+[`tlsnotary/tlsn`](https://github.com/tlsnotary/tlsn) `main`. Relative to
+upstream `main` at `15a7c55`, the contributions in this checkout are:
+
+- TLS 1.3 HKDF and key-schedule groundwork in `crates/components/hmac-sha256`
+  while preserving the existing TLS 1.2-facing API used elsewhere in the
+  workspace.
+- TLS 1.3 shared-secret and scope helpers in
+  `crates/components/key-exchange`.
+- TLS 1.3 epoch/key tracking, Finished handling, traffic-secret transitions,
+  and record protection in `crates/mpc-tls`.
+- End-to-end TLS 1.3 prove/verify plumbing, transcript export, and TLS 1.3
+  certificate binding across `crates/tlsn`, `crates/core`, and
+  `crates/tls/client`.
+- Local TLS 1.3 fixture coverage plus a Docker-backed interop harness for
+  `nginx` and `Apache`, with opt-in `Caddy` and `openssl s_server` cases.
+
+The current TLS 1.3 scope in this fork is intentionally narrow:
+
+- Full 1-RTT handshakes only.
+- `TLS_AES_128_GCM_SHA256` only.
+- P-256 key share path.
+- No PSK, resumption, 0-RTT, or key update support.
+- Local and focused interop coverage exists, but broad "works in the wild"
+  claims still require a wider real-server compatibility sweep.
+
+See [STATUS.md](./STATUS.md) for the completed checklist and [CR-001.md](./CR-001.md)
+for the original implementation plan.
+
 ## Directory
 
 - [examples](./crates/examples/): Examples on how to use the TLSNotary protocol.
