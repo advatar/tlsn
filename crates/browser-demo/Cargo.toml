@@ -1,0 +1,22 @@
+[package]
+name = "tlsn-browser-demo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+tlsn-sdk-core = { workspace = true }
+
+anyhow = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
+clap = { workspace = true, features = ["derive", "env"] }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true, features = ["compat"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "set-header", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+

@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TLSNotary Browser Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <p class="eyebrow">Browser Proof Demo</p>
+        <h1>TLSNotary from a browser, with a remote-style notary and TCP bridge.</h1>
+        <p class="lede">
+          The browser owns the TLS session. A local Rust service plays the notary role and tunnels
+          raw bytes to the target origin over WebSockets.
+        </p>
+        <div class="hero-meta">
+          <span id="health-indicator" class="pill">Checking server</span>
+          <span class="pill ghost">WASM: <span id="wasm-indicator">not loaded</span></span>
+        </div>
+      </header>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>1. Request</h2>
+          <p>Enter a public `https://` URL and optional headers. The request is sent through the TLS prover.</p>
+        </div>
+        <form id="request-form" class="stack">
+          <label class="field">
+            <span>URL</span>
+            <input
+              id="url-input"
+              name="url"
+              type="url"
+              value="https://example.com/"
+              placeholder="https://example.com/"
+              required
+            />
+          </label>
+          <label class="field">
+            <span>Headers</span>
+            <textarea
+              id="headers-input"
+              name="headers"
+              rows="4"
+              placeholder="Accept: text/html&#10;User-Agent: TLSN Browser Demo"
+            ></textarea>
+          </label>
+          <button id="request-button" class="button" type="submit">Fetch transcript</button>
+        </form>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="card-head">
+            <h2>2. Request Transcript</h2>
+            <p>The local prover view of bytes sent to the origin.</p>
+          </div>
+          <pre id="sent-transcript" class="transcript empty">No transcript yet.</pre>
+        </article>
+        <article class="card">
+          <div class="card-head">
+            <h2>3. Response Transcript</h2>
+            <p>The local prover view of bytes received from the origin.</p>
+          </div>
+          <pre id="recv-transcript" class="transcript empty">No transcript yet.</pre>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>4. Selective Disclosure</h2>
+          <p>Choose the parts of the HTTP exchange that the verifier is allowed to learn.</p>
+        </div>
+        <form id="reveal-form" class="stack">
+          <div class="toggle-row">
+            <label class="toggle">
+              <input id="reveal-request-line" type="checkbox" checked />
+              <span>Reveal request line</span>
+            </label>
+            <label class="toggle">
+              <input id="reveal-response-status" type="checkbox" checked />
+              <span>Reveal response status line</span>
+            </label>
+            <label class="toggle">
+              <input id="reveal-full-response-body" type="checkbox" />
+              <span>Reveal full response body</span>
+            </label>
+          </div>
+          <div class="grid">
+            <label class="field">
+              <span>Request headers to reveal</span>
+              <textarea
+                id="request-header-input"
+                rows="4"
+                placeholder="host&#10;accept"
+              ></textarea>
+            </label>
+            <label class="field">
+              <span>Response headers to reveal</span>
+              <textarea
+                id="response-header-input"
+                rows="4"
+                placeholder="content-type&#10;date"
+              ></textarea>
+            </label>
+          </div>
+          <label class="field">
+            <span>JSON body fields to reveal</span>
+            <textarea
+              id="json-path-input"
+              rows="4"
+              placeholder="user.id&#10;user.profile.name"
+            ></textarea>
+          </label>
+          <button id="reveal-button" class="button accent" type="submit" disabled>
+            Finalize proof
+          </button>
+        </form>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="card-head">
+            <h2>5. Verifier Status</h2>
+            <p>The remote-style notary view returned by the backend service.</p>
+          </div>
+          <pre id="verifier-status" class="transcript empty">No verifier session yet.</pre>
+        </article>
+        <article class="card">
+          <div class="card-head">
+            <h2>6. Verified Transcript</h2>
+            <p>Only authenticated and revealed bytes remain visible here.</p>
+          </div>
+          <pre id="verified-transcript" class="transcript empty">No verified transcript yet.</pre>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
+

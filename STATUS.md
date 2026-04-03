@@ -18,9 +18,11 @@
 
 ## CR-002
 
-- [ ] Scaffold a browser demo workspace with static assets and a local Rust server.
-- [ ] Implement a WebSocket-backed notary service that runs the verifier role for a browser prover.
-- [ ] Implement a WebSocket TCP bridge for target TLS connections with conservative destination validation.
-- [ ] Add a browser client that drives `tlsn-wasm`, shows the transcript, and lets the user choose reveal ranges.
-- [ ] Add focused tests for session pairing and destination validation, plus usage documentation.
-- [ ] Verify the browser demo builds and the focused test suite passes locally.
+- [x] Scaffold a browser demo workspace with static assets and a local Rust server.
+- [x] Implement a WebSocket-backed notary service that runs the verifier role for a browser prover.
+- [x] Implement a WebSocket TCP bridge for target TLS connections with conservative destination validation.
+- [x] Add a browser client that drives `tlsn-wasm`, shows the transcript, and lets the user choose reveal ranges.
+- [x] Add focused tests for session pairing and destination validation, plus usage documentation.
+- [x] Verify the browser demo builds and the focused test suite passes locally.
+
+Note: keep the eventual proof artifact shape compatible with wrapping in a W3C Verifiable Credential.

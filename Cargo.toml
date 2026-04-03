@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/attestation",
+    "crates/browser-demo",
     "crates/components/deap",
     "crates/components/cipher",
     "crates/components/hmac-sha256",
