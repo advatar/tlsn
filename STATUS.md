@@ -15,3 +15,12 @@
 - [x] Teach `crates/tlsn` to prove and verify TLS 1.3 application traffic without assuming the TLS 1.2 tag/IV layout.
 - [x] Extend the handshake and attestation data model so TLS 1.3 certificate binding can be carried and verified end-to-end.
 - [x] Add a TLS 1.3 end-to-end `tlsn` fixture test and verify the focused TLS 1.3 path locally.
+
+## CR-002
+
+- [ ] Scaffold a browser demo workspace with static assets and a local Rust server.
+- [ ] Implement a WebSocket-backed notary service that runs the verifier role for a browser prover.
+- [ ] Implement a WebSocket TCP bridge for target TLS connections with conservative destination validation.
+- [ ] Add a browser client that drives `tlsn-wasm`, shows the transcript, and lets the user choose reveal ranges.
+- [ ] Add focused tests for session pairing and destination validation, plus usage documentation.
+- [ ] Verify the browser demo builds and the focused test suite passes locally.
