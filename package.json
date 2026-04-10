@@ -1,0 +1,9 @@
+{
+  "name": "tlsn-dev-shortcuts",
+  "private": true,
+  "scripts": {
+    "demo": "sh ./scripts/browser-demo.sh",
+    "demo:help": "DEMO_SKIP_WASM_BUILD=1 sh ./scripts/browser-demo.sh --help",
+    "demo:local": "DEMO_ALLOW_HOSTS=\"localhost\" DEMO_ALLOW_PORTS=\"4000\" sh ./scripts/browser-demo.sh --allow-loopback --allow-private-ips"
+  }
+}

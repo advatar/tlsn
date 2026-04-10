@@ -29,6 +29,6 @@ Note: keep the eventual proof artifact shape compatible with wrapping in a W3C V
 
 ## CR-003
 
-- [ ] Add a shared developer launcher for the browser demo flow.
-- [ ] Add `make` and `npm` wrappers for the browser demo commands.
-- [ ] Document the wrapper usage and verify the command wiring locally.
+- [x] Add a shared developer launcher for the browser demo flow.
+- [x] Add `make` and `npm` wrappers for the browser demo commands.
+- [x] Document the wrapper usage and verify the command wiring locally.
