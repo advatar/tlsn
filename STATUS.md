@@ -26,3 +26,9 @@
 - [x] Verify the browser demo builds and the focused test suite passes locally.
 
 Note: keep the eventual proof artifact shape compatible with wrapping in a W3C Verifiable Credential.
+
+## CR-003
+
+- [ ] Add a shared developer launcher for the browser demo flow.
+- [ ] Add `make` and `npm` wrappers for the browser demo commands.
+- [ ] Document the wrapper usage and verify the command wiring locally.
