@@ -32,3 +32,7 @@ Note: keep the eventual proof artifact shape compatible with wrapping in a W3C V
 - [x] Add a shared developer launcher for the browser demo flow.
 - [x] Add `make` and `npm` wrappers for the browser demo commands.
 - [x] Document the wrapper usage and verify the command wiring locally.
+
+## CR-004
+
+- [x] Capture a staged plan for adding verifier webhooks and an optional EAS attestation flow to the browser demo without importing the full `tlsn-extension` stack.
