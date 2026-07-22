@@ -36,3 +36,17 @@ Note: keep the eventual proof artifact shape compatible with wrapping in a W3C V
 ## CR-004
 
 - [x] Capture a staged plan for adding verifier webhooks and an optional EAS attestation flow to the browser demo without importing the full `tlsn-extension` stack.
+
+## CR-005
+
+- [x] Generalize the TLS 1.3 MPC HKDF boundary to accept the 64-byte `SecP256r1MLKEM768` hybrid shared secret without regressing the P-256 path.
+- [x] Add the draft `SecP256r1MLKEM768` named-group code point and exact client/server wire-format primitives.
+- [x] Add ML-KEM-768 key generation and decapsulation using RustCrypto's FIPS 203 implementation.
+- [x] Add focused tests for hybrid share lengths, parsing, decapsulation, secret ordering, and malformed inputs.
+- [x] Document the security boundary and the remaining handshake/threshold-ML-KEM work.
+- [x] Verify the focused tests and affected-crate builds, then commit only CR-005 files.
+
+The next PQ milestone is to make group selection configurable and carry the
+ML-KEM private input through both MPC-TLS roles. A subsequent cryptographic
+workstream must replace single-party decapsulation with threshold ML-KEM before
+claiming post-quantum security against a prover or verifier.

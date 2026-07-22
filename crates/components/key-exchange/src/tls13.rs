@@ -11,16 +11,21 @@
 use mpz_memory_core::{binary::U8, Array};
 use thiserror::Error;
 
-/// TLS 1.3 ECDHE shared secret.
+/// TLS 1.3 P-256 ECDHE shared secret.
 ///
 /// In v0 the supported group is `secp256r1`, so the secret remains 32 bytes.
 pub type SharedSecret = Array<U8, 32>;
+
+/// Size of the `SecP256r1MLKEM768` hybrid shared secret.
+pub const HYBRID_SHARED_SECRET_LEN: usize = 64;
 
 /// Supported named groups for the initial TLS 1.3 workstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedGroup {
     /// NIST P-256 / secp256r1.
     Secp256r1,
+    /// Hybrid P-256 and ML-KEM-768.
+    Secp256r1MlKem768,
 }
 
 /// Narrow TLS 1.3 scope enforced by the workstream.
@@ -58,9 +63,8 @@ impl Scope {
 
     /// Validates the scope against the v0 boundary.
     pub fn validate(&self) -> Result<(), ScopeError> {
-        if self.named_group != NamedGroup::Secp256r1 {
-            return Err(ScopeError::NamedGroup);
-        }
+        // Both the original P-256 group and its ML-KEM-768 hybrid are
+        // compatible with the otherwise narrow v0 handshake shape.
         if self.psk {
             return Err(ScopeError::Psk);
         }

@@ -57,6 +57,25 @@ impl Tls13KeySched {
 
     /// Allocates the functionality with the given pre-master secret.
     pub fn alloc(&mut self, vm: &mut dyn Vm<Binary>, pms: Array<U8, 32>) -> Result<(), FError> {
+        self.alloc_inner(vm, &[pms.into()])
+    }
+
+    /// Allocates the functionality with the 64-byte
+    /// `SecP256r1MLKEM768` secret (`P-256 || ML-KEM-768`).
+    pub fn alloc_hybrid(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        p256_secret: Array<U8, 32>,
+        mlkem_secret: Array<U8, 32>,
+    ) -> Result<(), FError> {
+        self.alloc_inner(vm, &[p256_secret.into(), mlkem_secret.into()])
+    }
+
+    fn alloc_inner(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        pms: &[mpz_vm_core::memory::Vector<U8>],
+    ) -> Result<(), FError> {
         let State::Initialized = self.state.take() else {
             return Err(FError::state("not in initialized state"));
         };

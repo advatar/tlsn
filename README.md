@@ -64,6 +64,20 @@ The current TLS 1.3 scope in this fork is intentionally narrow:
 - Local and focused interop coverage exists, but broad "works in the wild"
   claims still require a wider real-server compatibility sweep.
 
+### Post-quantum TLS groundwork
+
+The key-exchange component contains an experimental implementation of the
+IETF `SecP256r1MLKEM768` wire format and ML-KEM-768 decapsulation, and the
+TLS 1.3 MPC HKDF accepts the resulting 64-byte `P-256 || ML-KEM` input. This
+is groundwork rather than an enabled end-to-end handshake: group negotiation
+and MPC-TLS handshake-state integration are still pending.
+
+The current ML-KEM client key is held by one party. Consequently, this design
+can protect against an external harvest-now/decrypt-later observer once wired
+end to end, but it must not be described as quantum-secure against either
+TLSNotary participant. That stronger claim requires threshold/MPC ML-KEM key
+generation and decapsulation.
+
 See [STATUS.md](./STATUS.md) for the completed checklist and [CR-001.md](./CR-001.md)
 for the original implementation plan.
 

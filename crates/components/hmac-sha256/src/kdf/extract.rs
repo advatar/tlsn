@@ -7,7 +7,7 @@ use crate::{
 use mpz_vm_core::{
     memory::{
         binary::{Binary, U8},
-        Array, Vector,
+        Vector,
     },
     Vm,
 };
@@ -97,10 +97,10 @@ impl HkdfExtractPrivIkm {
     /// instantiated with the salt.
     pub(crate) fn alloc(
         vm: &mut dyn Vm<Binary>,
-        ikm: Array<U8, 32>,
+        ikm: &[Vector<U8>],
         mut hmac: HmacNormal,
     ) -> Result<Self, FError> {
-        hmac.set_msg(vm, &[ikm.into()])?;
+        hmac.set_msg(vm, ikm)?;
 
         Ok(Self {
             output: hmac.output()?.into(),
@@ -176,7 +176,7 @@ mod tests {
 
             let hmac = HmacNormal::alloc_with_state(vm, inner_state, outer_state).unwrap();
 
-            let mut hkdf_leader = HkdfExtractPrivIkm::alloc(vm, ikm_ref, hmac).unwrap();
+            let mut hkdf_leader = HkdfExtractPrivIkm::alloc(vm, &[ikm_ref.into()], hmac).unwrap();
             let out_leader = hkdf_leader.output();
             let mut leader_decode_fut = vm.decode(out_leader).unwrap();
 
@@ -191,7 +191,7 @@ mod tests {
 
             let hmac = HmacNormal::alloc_with_state(vm, inner_state, outer_state).unwrap();
 
-            let mut hkdf_follower = HkdfExtractPrivIkm::alloc(vm, ikm_ref, hmac).unwrap();
+            let mut hkdf_follower = HkdfExtractPrivIkm::alloc(vm, &[ikm_ref.into()], hmac).unwrap();
             let out_follower = hkdf_follower.output();
             let mut follower_decode_fut = vm.decode(out_follower).unwrap();
 

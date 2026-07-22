@@ -127,6 +127,7 @@ itybity = { version = "0.2" }
 js-sys = { version = "0.3" }
 k256 = { version = "0.13" }
 log = { version = "0.4" }
+ml-kem = { version = "0.3.2", features = ["getrandom", "zeroize"] }
 once_cell = { version = "1.19" }
 opaque-debug = { version = "0.3" }
 p256 = { version = "0.13" }

@@ -17,6 +17,7 @@
 mod circuit;
 pub(crate) mod error;
 mod exchange;
+mod hybrid;
 #[cfg(feature = "mock")]
 pub mod mock;
 pub(crate) mod point_addition;
@@ -24,6 +25,11 @@ pub mod tls13;
 
 pub use error::KeyExchangeError;
 pub use exchange::MpcKeyExchange;
+pub use hybrid::{
+    HybridClientKey, HybridKeyError, HybridServerShare, MLKEM768_CIPHERTEXT_LEN,
+    MLKEM768_ENCAPSULATION_KEY_LEN, P256_POINT_LEN, SECP256R1_MLKEM768_CLIENT_SHARE_LEN,
+    SECP256R1_MLKEM768_SERVER_SHARE_LEN,
+};
 pub use tls13::{
     NamedGroup as Tls13NamedGroup, Scope as Tls13Scope, ScopeError as Tls13ScopeError, SharedSecret,
 };

@@ -74,7 +74,7 @@ impl HandshakeSecrets {
     pub(crate) fn alloc(
         &mut self,
         vm: &mut dyn Vm<Binary>,
-        pms: Array<U8, 32>,
+        pms: &[Vector<U8>],
     ) -> Result<(Array<U8, 32>, Array<U8, 32>, Vector<U8>), FError> {
         let State::Initialized = self.state.take() else {
             return Err(FError::state("not in Initialized state"));

@@ -28,6 +28,7 @@ mpz-circuits = { workspace = true }
 mpz-core = { workspace = true }
 
 p256 = { workspace = true, features = ["ecdh", "serde"] }
+ml-kem = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serio = { workspace = true }
