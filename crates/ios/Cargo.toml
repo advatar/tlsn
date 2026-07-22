@@ -1,0 +1,19 @@
+[package]
+name = "tlsn-ios"
+description = "C ABI for the TLSNotary Swift package"
+version = "0.1.0-alpha.15-pre"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tlsn_mobile"
+crate-type = ["staticlib", "rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+url = { workspace = true }

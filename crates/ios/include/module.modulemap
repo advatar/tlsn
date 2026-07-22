@@ -1,0 +1,4 @@
+module TLSNMobileFFI {
+    header "tlsn_mobile.h"
+    export *
+}

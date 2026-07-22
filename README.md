@@ -81,6 +81,15 @@ generation and decapsulation.
 See [STATUS.md](./STATUS.md) for the completed checklist and [CR-001.md](./CR-001.md)
 for the original implementation plan.
 
+## iOS Swift Package
+
+[`packages/TLSNotaryMobile`](./packages/TLSNotaryMobile) contains an
+experimental Swift Package backed by a Rust XCFramework. It includes a safe C
+ABI, holder-key signing (including an iOS Secure Enclave implementation), a
+SwiftUI/WKWebView evidence flow, and an example app entry point. The current
+vertical slice constructs the portable evidence envelope; connecting the Rust
+TLSNotary prover to the mobile verifier/relay is the next milestone.
+
 ## Directory
 
 - [examples](./crates/examples/): Examples on how to use the TLSNotary protocol.

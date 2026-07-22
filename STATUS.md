@@ -50,3 +50,18 @@ The next PQ milestone is to make group selection configurable and carry the
 ML-KEM private input through both MPC-TLS roles. A subsequent cryptographic
 workstream must replace single-party decapsulation with threshold ML-KEM before
 claiming post-quantum security against a prover or verifier.
+
+## CR-006
+
+- [x] Add an iOS-safe Rust FFI crate for URL/request validation and portable evidence-credential construction.
+- [x] Add a Swift Package with async, memory-safe wrappers over the Rust ABI and holder-signature verification.
+- [x] Add an iOS SwiftUI/WKWebView example that captures the selected URL and creates an evidence credential.
+- [x] Add software and Secure Enclave holder keys with `did:jwk` identifiers.
+- [x] Add an XCFramework build script and integration documentation for device, simulator, and macOS test targets.
+- [x] Add Rust and Swift unit tests for validation, credential shape, signing, and FFI ownership.
+- [x] Verify Rust tests, Swift tests, and an iOS Simulator package build, then commit only CR-006 files.
+
+The next mobile milestone is to expose `tlsn-sdk-core` setup, request, and proof
+operations through an asynchronous FFI handle and replace the `URLSession`
+replay with a notary/relay-backed Rust connection. OpenID4VCI issuance remains
+an issuer-service integration after the evidence proof is produced.

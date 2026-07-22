@@ -22,6 +22,7 @@ members = [
     "crates/harness/executor",
     "crates/harness/runner",
     "crates/harness/plot",
+    "crates/ios",
     "crates/tlsn",
 ]
 resolver = "2"
@@ -150,6 +151,7 @@ sct = { version = "0.7" }
 semver = { version = "1.0" }
 serde = { version = "1.0" }
 serde_json = { version = "1.0" }
+url = { version = "2.5" }
 sha2 = { version = "0.10" }
 signature = { version = "2.2" }
 thiserror = { version = "1.0" }

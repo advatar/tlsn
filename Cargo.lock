@@ -7785,6 +7785,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tlsn-ios"
+version = "0.1.0-alpha.15-pre"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "tlsn-key-exchange"
 version = "0.1.0-alpha.15-pre"
 dependencies = [
