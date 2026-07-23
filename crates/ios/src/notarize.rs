@@ -1,0 +1,336 @@
+//! Asynchronous native TLSNotary operation for mobile clients.
+
+use std::{
+    collections::HashMap,
+    ffi::{CStr, c_char, c_void},
+    sync::OnceLock,
+    time::Duration,
+};
+
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use futures::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tlsn_sdk_core::{HttpRequest, ProverConfig, Reveal, SdkProver};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
+use url::Url;
+
+use crate::{MAX_INPUT_BYTES, error_json, into_c_string};
+
+const BRIDGE_CAPACITY: usize = 1 << 20;
+const POLL_ATTEMPTS: usize = 80;
+
+/// Completion callback for [`tlsn_mobile_notarize`].
+///
+/// The result is a JSON C string owned by the caller and must be released with
+/// `tlsn_mobile_string_free`.
+pub type TlsnMobileCallback = extern "C" fn(*mut c_void, *mut c_char);
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NotarizeRequest {
+    url: String,
+    notary_url: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(default)]
+    max_recv_data: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotarizeResponse {
+    session_id: String,
+    response_status: u16,
+    response_body: String,
+    notary_attestation: Value,
+}
+
+/// Starts a complete TLSNotary GET operation on the shared Rust runtime.
+///
+/// This function copies `request_json` before returning. Exactly one callback
+/// is made when the operation completes. Returns `0` if arguments are invalid
+/// and no operation was started, otherwise returns a non-zero operation ID.
+#[no_mangle]
+pub extern "C" fn tlsn_mobile_notarize(
+    request_json: *const c_char,
+    callback: Option<TlsnMobileCallback>,
+    context: *mut c_void,
+) -> u64 {
+    let Some(callback) = callback else {
+        return 0;
+    };
+    if request_json.is_null() {
+        callback(context, into_c_string(error_json("request is null")));
+        return 0;
+    }
+
+    // SAFETY: the ABI contract requires a non-null, NUL-terminated C string.
+    let request = unsafe { CStr::from_ptr(request_json) }.to_bytes();
+    if request.len() > MAX_INPUT_BYTES {
+        callback(
+            context,
+            into_c_string(error_json("request exceeds 2 MiB")),
+        );
+        return 0;
+    }
+    let request = request.to_vec();
+    let operation_id = rand::random::<u64>().max(1);
+    let context = context as usize;
+
+    runtime().spawn(async move {
+        let result = match serde_json::from_slice::<NotarizeRequest>(&request) {
+            Ok(request) => run(request)
+                .await
+                .and_then(|response| serde_json::to_string(&response).map_err(|e| e.to_string())),
+            Err(_) => Err("invalid notarization request JSON".to_string()),
+        };
+        let output = result.unwrap_or_else(|error| error_json(&error));
+        callback(context as *mut c_void, into_c_string(output));
+    });
+
+    operation_id
+}
+
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .thread_name("tlsn-mobile")
+            .build()
+            .expect("mobile Tokio runtime initializes")
+    })
+}
+
+async fn run(request: NotarizeRequest) -> Result<NotarizeResponse, String> {
+    let target = Url::parse(&request.url).map_err(|_| "invalid target URL".to_string())?;
+    if target.scheme() != "https" {
+        return Err("only HTTPS target URLs can be notarized".to_string());
+    }
+    let host = target
+        .host_str()
+        .ok_or_else(|| "target URL has no host".to_string())?;
+    let port = target.port_or_known_default().unwrap_or(443);
+    let notary = validate_notary_url(&request.notary_url)?;
+    let session_id = format!("{:032x}", rand::random::<u128>());
+
+    let notary_ws = websocket_endpoint(&notary, &format!("ws/notary/{session_id}"))?;
+    let server_ws = websocket_endpoint(
+        &notary,
+        &format!("ws/tcp?host={}&port={port}", percent_encode(host)),
+    )?;
+
+    let notary_io = connect_websocket_io(notary_ws.as_str()).await?;
+    let mut prover = SdkProver::new(
+        ProverConfig::builder(host)
+            .max_sent_data(32 * 1024)
+            .max_recv_data(request.max_recv_data.unwrap_or(512 * 1024))
+            .build(),
+    )
+    .map_err(|e| e.to_string())?;
+    prover.setup(notary_io).await.map_err(|e| e.to_string())?;
+
+    let server_io = connect_websocket_io(server_ws.as_str()).await?;
+    let mut http_request = HttpRequest::get(request_target(&target));
+    let mut headers = request.headers;
+    headers
+        .entry("Host".to_string())
+        .or_insert_with(|| target_host_header(&target));
+    headers
+        .entry("Accept".to_string())
+        .or_insert_with(|| "*/*".to_string());
+    headers
+        .entry("Accept-Encoding".to_string())
+        .or_insert_with(|| "identity".to_string());
+    headers
+        .entry("Connection".to_string())
+        .or_insert_with(|| "close".to_string());
+    headers
+        .entry("User-Agent".to_string())
+        .or_insert_with(|| "TLSNotaryMobile/0.1".to_string());
+    for (name, value) in headers {
+        http_request = http_request.header(name, value.into_bytes());
+    }
+
+    let response = prover
+        .send_request(server_io, http_request)
+        .await
+        .map_err(|e| e.to_string())?;
+    let transcript = prover.transcript().map_err(|e| e.to_string())?;
+    prover
+        .reveal(
+            Reveal::new()
+                .sent(0..transcript.sent.len())
+                .recv(0..transcript.recv.len())
+                .server_identity(true),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let snapshot = poll_session(&notary, &session_id).await?;
+    let output = snapshot
+        .get("output")
+        .cloned()
+        .ok_or_else(|| "notary completed without verifier output".to_string())?;
+
+    Ok(NotarizeResponse {
+        session_id,
+        response_status: response.status,
+        response_body: BASE64.encode(response.body.unwrap_or_default()),
+        notary_attestation: output,
+    })
+}
+
+async fn connect_websocket_io(url: &str) -> Result<Compat<DuplexStream>, String> {
+    let (websocket, _) = connect_async(url)
+        .await
+        .map_err(|e| format!("failed to connect websocket: {e}"))?;
+    let (websocket_sink, websocket_stream) = websocket.split();
+    let (application, bridge) = tokio::io::duplex(BRIDGE_CAPACITY);
+    let (bridge_reader, bridge_writer) = tokio::io::split(bridge);
+
+    tokio::spawn(pump_io_to_websocket(bridge_reader, websocket_sink));
+    tokio::spawn(pump_websocket_to_io(websocket_stream, bridge_writer));
+
+    Ok(application.compat())
+}
+
+async fn pump_io_to_websocket<R, S>(mut reader: R, mut sink: S)
+where
+    R: tokio::io::AsyncRead + Unpin,
+    S: futures::Sink<Message> + Unpin,
+    S::Error: std::fmt::Display,
+{
+    let mut buffer = vec![0u8; 16 * 1024];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => {
+                if sink
+                    .send(Message::Binary(buffer[..read].to_vec().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = sink.close().await;
+}
+
+async fn pump_websocket_to_io<S, W>(mut stream: S, mut writer: W)
+where
+    S: futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    while let Some(message) = stream.next().await {
+        match message {
+            Ok(Message::Binary(bytes)) => {
+                if writer.write_all(&bytes).await.is_err() {
+                    break;
+                }
+            }
+            Ok(Message::Close(_)) | Err(_) => break,
+            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
+            Ok(Message::Text(_)) | Ok(Message::Frame(_)) => break,
+        }
+    }
+    let _ = writer.shutdown().await;
+}
+
+async fn poll_session(notary: &Url, session_id: &str) -> Result<Value, String> {
+    let endpoint = notary
+        .join(&format!("api/sessions/{session_id}"))
+        .map_err(|e| e.to_string())?;
+    let client = reqwest::Client::new();
+    for _ in 0..POLL_ATTEMPTS {
+        let response = client
+            .get(endpoint.clone())
+            .send()
+            .await
+            .map_err(|e| format!("failed to poll notary: {e}"))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        let value: Value = response.json().await.map_err(|e| e.to_string())?;
+        match value.get("status").and_then(Value::as_str) {
+            Some("running") => tokio::time::sleep(Duration::from_millis(250)).await,
+            Some("complete") => return Ok(value),
+            Some("failed") => {
+                return Err(value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("notary verification failed")
+                    .to_string());
+            }
+            _ => return Err("invalid notary session response".to_string()),
+        }
+    }
+    Err("timed out waiting for notary verification".to_string())
+}
+
+fn validate_notary_url(value: &str) -> Result<Url, String> {
+    let mut url = Url::parse(value).map_err(|_| "invalid notary URL".to_string())?;
+    let local = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+    if url.scheme() != "https" && !(local && url.scheme() == "http") {
+        return Err("notary URL must use HTTPS (HTTP is allowed for loopback)".to_string());
+    }
+    if !url.path().ends_with('/') {
+        url.set_path(&format!("{}/", url.path()));
+    }
+    Ok(url)
+}
+
+fn websocket_endpoint(base: &Url, path: &str) -> Result<Url, String> {
+    let mut url = base.join(path).map_err(|e| e.to_string())?;
+    url.set_scheme(if base.scheme() == "https" { "wss" } else { "ws" })
+        .map_err(|_| "invalid websocket scheme".to_string())?;
+    Ok(url)
+}
+
+fn request_target(url: &Url) -> String {
+    match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
+fn target_host_header(url: &Url) -> String {
+    match url.port() {
+        Some(port) => format!("{}:{port}", url.host_str().unwrap_or_default()),
+        None => url.host_str().unwrap_or_default().to_string(),
+    }
+}
+
+fn percent_encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_mobile_endpoints() {
+        let notary = validate_notary_url("https://notary.example/base").unwrap();
+        assert_eq!(
+            websocket_endpoint(&notary, "ws/notary/123")
+                .unwrap()
+                .as_str(),
+            "wss://notary.example/base/ws/notary/123"
+        );
+    }
+
+    #[test]
+    fn only_loopback_may_use_plain_http() {
+        assert!(validate_notary_url("http://127.0.0.1:3000").is_ok());
+        assert!(validate_notary_url("http://notary.example").is_err());
+    }
+}

@@ -65,3 +65,17 @@ The next mobile milestone is to expose `tlsn-sdk-core` setup, request, and proof
 operations through an asynchronous FFI handle and replace the `URLSession`
 replay with a notary/relay-backed Rust connection. OpenID4VCI issuance remains
 an issuer-service integration after the evidence proof is produced.
+
+## CR-007
+
+- [x] Add a native WebSocket IO adapter compatible with `tlsn-sdk-core` on iOS.
+- [x] Expose an asynchronous Rust FFI operation that runs setup, HTTPS GET, transcript capture, and reveal against the notary/relay service.
+- [x] Return the verified notary-session result to Swift and embed it in the holder-signed evidence credential.
+- [x] Replace the Swift `URLSession` replay with the Rust notary operation while preserving WKWebView cookies.
+- [x] Add callback lifetime/error tests and a local end-to-end notary integration test.
+- [x] Rebuild the XCFramework, run Rust/Swift/iOS builds, document the trust boundary, and commit only CR-007 files.
+
+The mobile credential currently embeds online verifier output, not a portable
+notary-signed attestation. The next milestone is to define and sign a durable
+evidence artifact, then add the issuer-facing OpenID4VCI exchange needed for an
+EUDI wallet to accept a profiled credential.

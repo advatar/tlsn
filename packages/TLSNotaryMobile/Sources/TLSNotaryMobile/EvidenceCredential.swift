@@ -45,6 +45,16 @@ public struct EvidenceCredential: Codable, Sendable {
     }
 }
 
+public struct NotaryConfiguration: Sendable {
+    public var baseURL: URL
+    public var maximumResponseBytes: Int
+
+    public init(baseURL: URL, maximumResponseBytes: Int = 512 * 1024) {
+        self.baseURL = baseURL
+        self.maximumResponseBytes = maximumResponseBytes
+    }
+}
+
 public enum TLSNotaryMobileError: Error, Equatable, LocalizedError {
     case invalidRequest(String)
     case rustFailure(String)
@@ -92,12 +102,63 @@ public struct SoftwareHolderKey: HolderSigningKey {
 
 public actor TLSNotaryMobileClient {
     private let holderKey: any HolderSigningKey
+    private let notary: NotaryConfiguration?
 
-    public init(holderKey: any HolderSigningKey = SoftwareHolderKey()) throws {
+    public init(
+        notary: NotaryConfiguration? = nil,
+        holderKey: any HolderSigningKey = SoftwareHolderKey()
+    ) throws {
         guard tlsn_mobile_abi_version() == 1 else {
             throw TLSNotaryMobileError.rustFailure("Unsupported Rust ABI version.")
         }
+        self.notary = notary
         self.holderKey = holderKey
+    }
+
+    /// Runs a GET through the Rust TLSNotary prover, then holder-signs the
+    /// verifier result as an evidence credential.
+    public func notarize(
+        url: URL,
+        headers: [String: String] = [:],
+        disclosedFields: [String] = []
+    ) async throws -> EvidenceCredential {
+        guard let notary else {
+            throw TLSNotaryMobileError.invalidRequest("A notary URL is required.")
+        }
+        let request: [String: Any] = [
+            "url": url.absoluteString,
+            "notaryUrl": notary.baseURL.absoluteString,
+            "headers": headers,
+            "maxRecvData": notary.maximumResponseBytes,
+        ]
+        let input = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
+        let output = try await Self.callNotary(input)
+        guard
+            let object = try JSONSerialization.jsonObject(with: output) as? [String: Any],
+            let status = object["responseStatus"] as? Int,
+            let bodyString = object["responseBody"] as? String,
+            let body = Data(base64Encoded: bodyString),
+            let attestation = object["notaryAttestation"]
+        else {
+            throw TLSNotaryMobileError.invalidRustResponse
+        }
+        guard 200..<400 ~= status else {
+            throw TLSNotaryMobileError.rustFailure(
+                "The notarized server returned HTTP \(status)."
+            )
+        }
+        let attestationData = try JSONSerialization.data(
+            withJSONObject: attestation,
+            options: [.sortedKeys]
+        )
+        return try await createEvidence(
+            EvidenceRequest(
+                url: url,
+                responseBody: body,
+                disclosedFields: disclosedFields,
+                notaryAttestation: attestationData
+            )
+        )
     }
 
     public func createEvidence(_ request: EvidenceRequest) async throws -> EvidenceCredential {
@@ -155,7 +216,56 @@ public actor TLSNotaryMobileClient {
         }
         return output
     }
+
+    private nonisolated static func callNotary(_ input: Data) async throws -> Data {
+        guard let inputString = String(data: input, encoding: .utf8) else {
+            throw TLSNotaryMobileError.invalidRequest("Request is not UTF-8.")
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            let box = Unmanaged.passRetained(NotarizationContinuation(continuation))
+            inputString.withCString {
+                _ = tlsn_mobile_notarize(
+                    $0,
+                    tlsNotaryMobileCompletion,
+                    box.toOpaque()
+                )
+            }
+        }
+    }
 }
+
+private final class NotarizationContinuation: @unchecked Sendable {
+    let value: CheckedContinuation<Data, any Error>
+
+    init(_ value: CheckedContinuation<Data, any Error>) {
+        self.value = value
+    }
+}
+
+private let tlsNotaryMobileCompletion:
+    @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<CChar>?) -> Void = {
+        context,
+        result in
+        guard let context else { return }
+        let box = Unmanaged<NotarizationContinuation>.fromOpaque(context).takeRetainedValue()
+        guard let result else {
+            box.value.resume(throwing: TLSNotaryMobileError.invalidRustResponse)
+            return
+        }
+        defer { tlsn_mobile_string_free(result) }
+        let data = Data(String(cString: result).utf8)
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            box.value.resume(throwing: TLSNotaryMobileError.invalidRustResponse)
+            return
+        }
+        if let error = object["error"] as? String {
+            box.value.resume(throwing: TLSNotaryMobileError.rustFailure(error))
+        } else {
+            box.value.resume(returning: data)
+        }
+    }
 
 private extension Data {
     init?(base64URLEncoded value: String) {

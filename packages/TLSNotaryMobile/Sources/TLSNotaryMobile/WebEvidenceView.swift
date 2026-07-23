@@ -43,16 +43,14 @@ public struct WebEvidenceView: View {
     @MainActor
     private func createEvidence() async {
         guard let url = browser.url else { return }
-        status = "Replaying selected HTTPS request…"
+        status = "Running the Rust TLSNotary prover…"
         do {
-            let body = try await browser.replayCurrentGET()
-            status = "Constructing holder-signed evidence…"
-            let result = try await client.createEvidence(
-                EvidenceRequest(url: url, responseBody: body)
-            )
+            let cookie = await browser.cookieHeader()
+            let headers = cookie.map { ["Cookie": $0] } ?? [:]
+            let result = try await client.notarize(url: url, headers: headers)
             credential = result
             status = result.verifyHolderSignature()
-                ? "Evidence credential created and locally verified."
+                ? "Notarized evidence credential created and locally verified."
                 : "Credential created, but holder verification failed."
         } catch {
             status = error.localizedDescription
@@ -69,21 +67,11 @@ final class BrowserModel {
     var title: String?
     var isLoading = false
 
-    func replayCurrentGET() async throws -> Data {
-        guard let webView, let url else {
-            throw TLSNotaryMobileError.invalidRequest("No page is selected.")
-        }
+    func cookieHeader() async -> String? {
+        guard let webView else { return nil }
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = HTTPCookieStorage.shared
-        cookies.forEach { configuration.httpCookieStorage?.setCookie($0) }
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
-        guard let http = response as? HTTPURLResponse, 200..<400 ~= http.statusCode else {
-            throw TLSNotaryMobileError.invalidRequest("The replayed request did not succeed.")
-        }
-        return data
+        let values = cookies.map { "\($0.name)=\($0.value)" }
+        return values.isEmpty ? nil : values.joined(separator: "; ")
     }
 }
 

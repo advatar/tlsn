@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
+mod notarize;
+
+pub use notarize::{TlsnMobileCallback, tlsn_mobile_notarize};
+
 const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DISCLOSURES: usize = 128;
 

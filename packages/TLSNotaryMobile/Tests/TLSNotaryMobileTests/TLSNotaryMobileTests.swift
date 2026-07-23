@@ -31,3 +31,14 @@ import Testing
         )
     }
 }
+
+@Test func asyncRustCallbackReturnsValidationErrors() async throws {
+    let client = try TLSNotaryMobileClient(
+        notary: NotaryConfiguration(
+            baseURL: #require(URL(string: "http://127.0.0.1:3000"))
+        )
+    )
+    await #expect(throws: TLSNotaryMobileError.self) {
+        try await client.notarize(url: #require(URL(string: "http://example.com")))
+    }
+}
