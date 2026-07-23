@@ -61,6 +61,26 @@ public struct NotaryConfiguration: Sendable {
     }
 }
 
+public struct IssuerConfiguration: Sendable {
+    public var baseURL: URL
+
+    public init(baseURL: URL) {
+        self.baseURL = baseURL
+    }
+}
+
+public struct WalletCredentialOffer: Codable, Sendable {
+    public let credentialOfferURI: URL
+    public let walletURI: URL
+    public let expiresIn: Int
+
+    enum CodingKeys: String, CodingKey {
+        case credentialOfferURI = "credential_offer_uri"
+        case walletURI = "wallet_uri"
+        case expiresIn = "expires_in"
+    }
+}
+
 public enum TLSNotaryMobileError: Error, Equatable, LocalizedError {
     case invalidRequest(String)
     case rustFailure(String)
@@ -109,15 +129,18 @@ public struct SoftwareHolderKey: HolderSigningKey {
 public actor TLSNotaryMobileClient {
     private let holderKey: any HolderSigningKey
     private let notary: NotaryConfiguration?
+    private let issuer: IssuerConfiguration?
 
     public init(
         notary: NotaryConfiguration? = nil,
+        issuer: IssuerConfiguration? = nil,
         holderKey: any HolderSigningKey = SoftwareHolderKey()
     ) throws {
         guard tlsn_mobile_abi_version() == 1 else {
             throw TLSNotaryMobileError.rustFailure("Unsupported Rust ABI version.")
         }
         self.notary = notary
+        self.issuer = issuer
         self.holderKey = holderKey
     }
 
@@ -184,6 +207,50 @@ public actor TLSNotaryMobileClient {
             )
         } catch {
             throw TLSNotaryMobileError.signingFailure(error.localizedDescription)
+        }
+    }
+
+    /// Submits the already verified notary artifact to the configured issuer
+    /// and returns an OpenID4VCI offer that can be opened by a wallet.
+    public func prepareWalletOffer(
+        from evidence: EvidenceCredential
+    ) async throws -> WalletCredentialOffer {
+        guard let issuer else {
+            throw TLSNotaryMobileError.invalidRequest("An issuer URL is required.")
+        }
+        guard
+            let credentialData = evidence.credential.data(using: .utf8),
+            let credential = try JSONSerialization.jsonObject(with: credentialData)
+                as? [String: Any],
+            let evidenceItems = credential["evidence"] as? [[String: Any]],
+            let artifact = evidenceItems.first?["notaryAttestation"]
+        else {
+            throw TLSNotaryMobileError.invalidRequest(
+                "The credential has no portable notary artifact."
+            )
+        }
+        let endpoint = issuer.baseURL
+            .appendingPathComponent("api")
+            .appendingPathComponent("evidence")
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: ["artifact": artifact],
+            options: [.sortedKeys]
+        )
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard
+            let http = response as? HTTPURLResponse,
+            http.statusCode == 200
+        else {
+            let message = String(data: data, encoding: .utf8) ?? "Issuer rejected evidence."
+            throw TLSNotaryMobileError.rustFailure(message)
+        }
+        do {
+            return try JSONDecoder().decode(WalletCredentialOffer.self, from: data)
+        } catch {
+            throw TLSNotaryMobileError.invalidRustResponse
         }
     }
 

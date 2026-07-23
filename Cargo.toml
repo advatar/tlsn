@@ -24,6 +24,7 @@ members = [
     "crates/harness/runner",
     "crates/harness/plot",
     "crates/ios",
+    "crates/issuer",
     "crates/tlsn",
 ]
 resolver = "2"
@@ -53,6 +54,7 @@ tlsn-data-fixtures = { path = "crates/data-fixtures" }
 tlsn-deap = { path = "crates/components/deap" }
 tlsn-formats = { path = "crates/formats" }
 tlsn-hmac-sha256 = { path = "crates/components/hmac-sha256" }
+tlsn-issuer = { path = "crates/issuer" }
 tlsn-key-exchange = { path = "crates/components/key-exchange" }
 tlsn-mpc-tls = { path = "crates/mpc-tls" }
 tlsn-notary-artifact = { path = "crates/notary-artifact" }

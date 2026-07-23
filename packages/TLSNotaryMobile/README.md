@@ -28,6 +28,9 @@ let client = try TLSNotaryMobileClient(
         baseURL: URL(string: "https://notary.example")!,
         trustedPublicKeyX963: pinnedNotaryPublicKey
     ),
+    issuer: IssuerConfiguration(
+        baseURL: URL(string: "https://issuer.example")!
+    ),
     holderKey: try SecureEnclaveHolderKey()
 )
 WebEvidenceView(client: client)

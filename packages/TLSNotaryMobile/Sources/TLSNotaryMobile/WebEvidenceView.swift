@@ -7,6 +7,7 @@ public struct WebEvidenceView: View {
     @State private var browser = BrowserModel()
     @State private var status = "Open an HTTPS page, then create evidence."
     @State private var credential: EvidenceCredential?
+    @State private var walletOffer: WalletCredentialOffer?
     private let client: TLSNotaryMobileClient
 
     public init(client: TLSNotaryMobileClient) {
@@ -32,6 +33,13 @@ public struct WebEvidenceView: View {
                             item: credential.credential,
                             preview: SharePreview("TLSNotary Evidence Credential")
                         )
+                        Button("Prepare EU wallet offer") {
+                            Task { await prepareWalletOffer(credential) }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    if let walletOffer {
+                        Link("Open in wallet", destination: walletOffer.walletURI)
                     }
                 }
                 .padding()
@@ -52,6 +60,17 @@ public struct WebEvidenceView: View {
             status = result.verifyHolderSignature()
                 ? "Notarized evidence credential created and locally verified."
                 : "Credential created, but holder verification failed."
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    private func prepareWalletOffer(_ credential: EvidenceCredential) async {
+        status = "Preparing OpenID4VCI wallet offer…"
+        do {
+            walletOffer = try await client.prepareWalletOffer(from: credential)
+            status = "Wallet offer ready."
         } catch {
             status = error.localizedDescription
         }

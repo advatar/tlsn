@@ -43,3 +43,16 @@ import Testing
         try await client.notarize(url: #require(URL(string: "http://example.com")))
     }
 }
+
+@Test func walletOfferRequiresConfiguredIssuer() async throws {
+    let client = try TLSNotaryMobileClient()
+    let evidence = EvidenceCredential(
+        credential: "{}",
+        holderPublicKey: "",
+        holderSignature: "",
+        signatureAlgorithm: "ES256"
+    )
+    await #expect(throws: TLSNotaryMobileError.self) {
+        try await client.prepareWalletOffer(from: evidence)
+    }
+}

@@ -93,3 +93,19 @@ The next wallet milestone is an issuer adapter implementing an authorization
 code or pre-authorized OpenID4VCI flow. It must validate the signed notary
 artifact and map disclosed evidence into a supported EUDI credential profile;
 the self-issued holder envelope alone is not wallet-trusted.
+
+## CR-009
+
+- [x] Add a standalone issuer service implementing OpenID4VCI 1.0 Final metadata and pre-authorized credential offers.
+- [x] Accept only pinned-key, signature-valid TLSNotary artifacts and create short-lived, single-use issuance grants.
+- [x] Implement OAuth authorization-server metadata, single-use pre-authorized-code token exchange, and nonce issuance.
+- [x] Validate ES256 OpenID4VCI JWT key proofs against audience, nonce, and time before issuing.
+- [x] Issue holder-bound JWT VC evidence credentials signed by a persistent issuer P-256 key.
+- [x] Add a Swift issuer handoff that submits the verified artifact and opens the returned wallet offer URI.
+- [x] Add discovery, replay, wrong-key, invalid-proof, and successful end-to-end flow tests.
+- [x] Document local/EUDI integration boundaries, verify all targets, and commit only CR-009 files.
+
+The next production milestone is to replace the in-memory grant store with a
+transactional shared store, deploy behind HTTPS, add credential status and
+revocation, and map the evidence credential into a wallet-supported EUDI
+profile under an accredited issuer trust framework.

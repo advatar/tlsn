@@ -8099,6 +8099,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tlsn-issuer"
+version = "0.1.0-alpha.15-pre"
+dependencies = [
+ "anyhow",
+ "axum 0.8.8",
+ "base64 0.22.1",
+ "clap",
+ "hex",
+ "p256",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "tlsn-notary-artifact",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tlsn-key-exchange"
 version = "0.1.0-alpha.15-pre"
 dependencies = [
