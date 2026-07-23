@@ -2,22 +2,26 @@
 
 use std::{
     collections::HashMap,
-    ffi::{CStr, c_char, c_void},
+    ffi::{c_char, c_void, CStr},
     sync::OnceLock,
     time::Duration,
 };
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tlsn_notary_artifact::SignedArtifact;
 use tlsn_sdk_core::{HttpRequest, ProverConfig, Reveal, SdkProver};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 use url::Url;
 
-use crate::{MAX_INPUT_BYTES, error_json, into_c_string};
+use crate::{error_json, into_c_string, MAX_INPUT_BYTES};
 
 const BRIDGE_CAPACITY: usize = 1 << 20;
 const POLL_ATTEMPTS: usize = 80;
@@ -37,6 +41,7 @@ struct NotarizeRequest {
     headers: HashMap<String, String>,
     #[serde(default)]
     max_recv_data: Option<usize>,
+    trusted_notary_public_key: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -70,10 +75,7 @@ pub extern "C" fn tlsn_mobile_notarize(
     // SAFETY: the ABI contract requires a non-null, NUL-terminated C string.
     let request = unsafe { CStr::from_ptr(request_json) }.to_bytes();
     if request.len() > MAX_INPUT_BYTES {
-        callback(
-            context,
-            into_c_string(error_json("request exceeds 2 MiB")),
-        );
+        callback(context, into_c_string(error_json("request exceeds 2 MiB")));
         return 0;
     }
     let request = request.to_vec();
@@ -172,16 +174,27 @@ async fn run(request: NotarizeRequest) -> Result<NotarizeResponse, String> {
         .map_err(|e| e.to_string())?;
 
     let snapshot = poll_session(&notary, &session_id).await?;
-    let output = snapshot
-        .get("output")
+    let artifact_value = snapshot
+        .get("artifact")
         .cloned()
-        .ok_or_else(|| "notary completed without verifier output".to_string())?;
+        .ok_or_else(|| "notary completed without a signed artifact".to_string())?;
+    let artifact: SignedArtifact = serde_json::from_value(artifact_value.clone())
+        .map_err(|e| format!("invalid signed notary artifact: {e}"))?;
+    let trusted_key = URL_SAFE_NO_PAD
+        .decode(&request.trusted_notary_public_key)
+        .map_err(|e| format!("invalid trusted notary public key: {e}"))?;
+    artifact
+        .verify(&trusted_key)
+        .map_err(|e| format!("notary artifact verification failed: {e}"))?;
+    if artifact.payload.session_id != session_id {
+        return Err("notary artifact session identifier mismatch".to_string());
+    }
 
     Ok(NotarizeResponse {
         session_id,
         response_status: response.status,
         response_body: BASE64.encode(response.body.unwrap_or_default()),
-        notary_attestation: output,
+        notary_attestation: artifact_value,
     })
 }
 
@@ -290,8 +303,12 @@ fn validate_notary_url(value: &str) -> Result<Url, String> {
 
 fn websocket_endpoint(base: &Url, path: &str) -> Result<Url, String> {
     let mut url = base.join(path).map_err(|e| e.to_string())?;
-    url.set_scheme(if base.scheme() == "https" { "wss" } else { "ws" })
-        .map_err(|_| "invalid websocket scheme".to_string())?;
+    url.set_scheme(if base.scheme() == "https" {
+        "wss"
+    } else {
+        "ws"
+    })
+    .map_err(|_| "invalid websocket scheme".to_string())?;
     Ok(url)
 }
 

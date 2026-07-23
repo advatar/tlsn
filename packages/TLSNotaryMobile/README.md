@@ -24,7 +24,10 @@ Configure the client with the URL of the companion browser-demo notary/relay:
 
 ```swift
 let client = try TLSNotaryMobileClient(
-    notary: NotaryConfiguration(baseURL: URL(string: "https://notary.example")!),
+    notary: NotaryConfiguration(
+        baseURL: URL(string: "https://notary.example")!,
+        trustedPublicKeyX963: pinnedNotaryPublicKey
+    ),
     holderKey: try SecureEnclaveHolderKey()
 )
 WebEvidenceView(client: client)
@@ -32,16 +35,18 @@ WebEvidenceView(client: client)
 
 ## Current security boundary
 
-The Rust engine now executes `tlsn-sdk-core` against the verifier and TCP relay,
-reveals the complete HTTP exchange, and embeds the verifier's session output
-before applying the holder signature. WKWebView cookies are copied into the
+The Rust engine executes `tlsn-sdk-core` against the verifier and TCP relay,
+reveals the complete HTTP exchange, verifies the notary's portable ES256
+artifact against `trustedPublicKeyX963`, and embeds it before applying the
+holder signature. WKWebView cookies are copied into the
 notarized GET, so those cookies and all revealed response data are disclosed to
 the configured verifier. Use a trusted notary and narrowly scoped cookies.
 
-The embedded verifier output is retrieved online from that notary service; it
-is not yet a portable, notary-signed attestation that an offline verifier can
-authenticate. The current credential therefore remains dependent on the
-configured notary's identity and availability.
+The notary service must keep a stable signing key using
+`TLSN_NOTARY_SIGNING_KEY` (a 64-character hex P-256 secret scalar). Obtain its
+base64url public key from `/api/health`, decode it to SEC1 bytes, and pin those
+bytes in the app. An ephemeral development key is generated when the variable
+is absent; credentials from that key will not remain anchored across restarts.
 
 The exported envelope is not automatically a trusted EUDI credential. An
 EUDI-recognized issuer can validate its embedded TLSNotary evidence and issue a

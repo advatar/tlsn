@@ -7843,10 +7843,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
+ "base64 0.22.1",
  "clap",
  "futures",
+ "hex",
  "serde",
  "serde_json",
+ "tlsn-notary-artifact",
  "tlsn-sdk-core",
  "tokio",
  "tokio-util",
@@ -8087,6 +8090,7 @@ dependencies = [
  "reqwest 0.13.4",
  "serde",
  "serde_json",
+ "tlsn-notary-artifact",
  "tlsn-sdk-core",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -8188,6 +8192,17 @@ dependencies = [
  "rand 0.9.2",
  "static_assertions",
  "web-time 1.1.0",
+]
+
+[[package]]
+name = "tlsn-notary-artifact"
+version = "0.1.0-alpha.15-pre"
+dependencies = [
+ "base64 0.22.1",
+ "p256",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

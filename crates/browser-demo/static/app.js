@@ -228,6 +228,7 @@ async function fetchHealth() {
   const response = await fetch("/api/health");
   const health = await response.json();
   healthIndicator.textContent = health.wasm_pkg_present ? "Server ready" : "Build wasm package first";
+  healthIndicator.title = `Artifact key: ${health.artifact_public_key}`;
   if (!health.wasm_pkg_present) {
     wasmIndicator.textContent = "missing /pkg";
   }
@@ -355,8 +356,9 @@ revealForm.addEventListener("submit", async (event) => {
     const snapshot = await pollSession(state.sessionId);
     appendStatus("Verifier result", snapshot);
 
-    if (snapshot.status === "complete" && snapshot.output?.transcript) {
-      const partial = snapshot.output.transcript;
+    const verifierOutput = snapshot.artifact?.payload?.verifierOutput;
+    if (snapshot.status === "complete" && verifierOutput?.transcript) {
+      const partial = verifierOutput.transcript;
       const sent = applyAuthenticatedMask(partial.sent, partial.sent_authed);
       const recv = applyAuthenticatedMask(partial.recv, partial.recv_authed);
       verifiedTranscript.textContent = `Sent\n${sent}\n\nReceived\n${recv}`;

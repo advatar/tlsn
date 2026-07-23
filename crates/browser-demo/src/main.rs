@@ -3,6 +3,7 @@ use std::{collections::BTreeSet, net::SocketAddr, path::PathBuf};
 use anyhow::Result;
 use clap::Parser;
 use tlsn_browser_demo::{AppConfig, DestinationPolicy, app};
+use tlsn_notary_artifact::ArtifactSigner;
 use tlsn_sdk_core::VerifierConfig;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -29,6 +30,9 @@ struct Cli {
     verifier_max_sent_data: usize,
     #[arg(long, default_value_t = 256 * 1024)]
     verifier_max_recv_data: usize,
+    /// Persistent 32-byte P-256 secret scalar encoded as 64 hex characters.
+    #[arg(long, env = "TLSN_NOTARY_SIGNING_KEY")]
+    artifact_signing_key: Option<String>,
 }
 
 #[tokio::main]
@@ -40,10 +44,21 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let artifact_signer = match cli.artifact_signing_key {
+        Some(value) => ArtifactSigner::from_bytes(&hex::decode(value)?)?,
+        None => {
+            tracing::warn!(
+                "using an ephemeral artifact signing key; set TLSN_NOTARY_SIGNING_KEY in production"
+            );
+            ArtifactSigner::random()
+        }
+    };
 
     let config = AppConfig {
         static_dir: cli.static_dir.unwrap_or_else(AppConfig::default_static_dir),
-        wasm_pkg_dir: cli.wasm_pkg_dir.unwrap_or_else(AppConfig::default_wasm_pkg_dir),
+        wasm_pkg_dir: cli
+            .wasm_pkg_dir
+            .unwrap_or_else(AppConfig::default_wasm_pkg_dir),
         destination_policy: DestinationPolicy {
             allowed_hosts: cli.allow_hosts,
             allowed_ports: BTreeSet::from_iter(cli.allow_ports),
@@ -54,6 +69,7 @@ async fn main() -> Result<()> {
             .max_sent_data(cli.verifier_max_sent_data)
             .max_recv_data(cli.verifier_max_recv_data)
             .build(),
+        artifact_signer,
     };
 
     let listener = TcpListener::bind(cli.listen).await?;
@@ -68,4 +84,3 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-

@@ -15,6 +15,7 @@ members = [
     "crates/tls/client",
     "crates/tls/core",
     "crates/mpc-tls",
+    "crates/notary-artifact",
     "crates/tls/server-fixture",
     "crates/sdk-core",
     "crates/wasm",
@@ -54,6 +55,7 @@ tlsn-formats = { path = "crates/formats" }
 tlsn-hmac-sha256 = { path = "crates/components/hmac-sha256" }
 tlsn-key-exchange = { path = "crates/components/key-exchange" }
 tlsn-mpc-tls = { path = "crates/mpc-tls" }
+tlsn-notary-artifact = { path = "crates/notary-artifact" }
 tlsn-mux = { git = "https://github.com/tlsnotary/tlsn-utils", rev = "dd419bf" }
 tlsn-server-fixture = { path = "crates/server-fixture/server" }
 tlsn-server-fixture-certs = { path = "crates/server-fixture/certs" }

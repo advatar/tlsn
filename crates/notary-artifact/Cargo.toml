@@ -1,0 +1,16 @@
+[package]
+name = "tlsn-notary-artifact"
+version = "0.1.0-alpha.15-pre"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Portable signed verifier artifacts for TLSNotary"
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+p256 = { workspace = true, features = ["ecdsa"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

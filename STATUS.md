@@ -79,3 +79,17 @@ The mobile credential currently embeds online verifier output, not a portable
 notary-signed attestation. The next milestone is to define and sign a durable
 evidence artifact, then add the issuer-facing OpenID4VCI exchange needed for an
 EUDI wallet to accept a profiled credential.
+
+## CR-008
+
+- [x] Define a versioned, deterministic portable artifact containing the session identifier, issue time, and verifier output.
+- [x] Sign completed artifacts with a persistent P-256 notary key and expose the corresponding public key.
+- [x] Verify the artifact signature and pinned notary key in the Rust mobile boundary before credential construction.
+- [x] Carry the signed artifact through the Swift API and require an explicitly trusted notary public key.
+- [x] Add round-trip, wrong-key, and payload/signature tamper tests.
+- [x] Rebuild the XCFramework, run Rust/browser-demo/Swift/iOS builds, document key provisioning, and commit only CR-008 files.
+
+The next wallet milestone is an issuer adapter implementing an authorization
+code or pre-authorized OpenID4VCI flow. It must validate the signed notary
+artifact and map disclosed evidence into a supported EUDI credential profile;
+the self-issued holder envelope alone is not wallet-trusted.

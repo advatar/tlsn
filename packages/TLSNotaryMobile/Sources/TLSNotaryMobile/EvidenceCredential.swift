@@ -47,10 +47,16 @@ public struct EvidenceCredential: Codable, Sendable {
 
 public struct NotaryConfiguration: Sendable {
     public var baseURL: URL
+    public var trustedPublicKeyX963: Data
     public var maximumResponseBytes: Int
 
-    public init(baseURL: URL, maximumResponseBytes: Int = 512 * 1024) {
+    public init(
+        baseURL: URL,
+        trustedPublicKeyX963: Data,
+        maximumResponseBytes: Int = 512 * 1024
+    ) {
         self.baseURL = baseURL
+        self.trustedPublicKeyX963 = trustedPublicKeyX963
         self.maximumResponseBytes = maximumResponseBytes
     }
 }
@@ -130,6 +136,7 @@ public actor TLSNotaryMobileClient {
             "notaryUrl": notary.baseURL.absoluteString,
             "headers": headers,
             "maxRecvData": notary.maximumResponseBytes,
+            "trustedNotaryPublicKey": notary.trustedPublicKeyX963.base64URLEncodedString(),
         ]
         let input = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
         let output = try await Self.callNotary(input)

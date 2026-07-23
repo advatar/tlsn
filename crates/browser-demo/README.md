@@ -26,6 +26,17 @@ cargo run -p tlsn-browser-demo -- \
   --allow-host .example.com
 ```
 
+Completed sessions are returned as portable ES256-signed artifacts. Production
+deployments must provision a stable 32-byte P-256 secret scalar:
+
+```bash
+export TLSN_NOTARY_SIGNING_KEY="<64 lowercase hex characters>"
+```
+
+The corresponding SEC1 public key is returned as base64url in
+`GET /api/health` under `artifact_public_key`; mobile clients must pin it.
+Without the variable the demo generates an ephemeral key and logs a warning.
+
 Shortcuts:
 
 ```bash

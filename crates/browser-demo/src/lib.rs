@@ -16,8 +16,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use tlsn_notary_artifact::{ArtifactSigner, SignedArtifact};
 use tlsn_sdk_core::{SdkVerifier, VerifierConfig, VerifierOutput};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -42,6 +44,7 @@ pub struct AppConfig {
     pub wasm_pkg_dir: PathBuf,
     pub destination_policy: DestinationPolicy,
     pub verifier_config: VerifierConfig,
+    pub artifact_signer: ArtifactSigner,
 }
 
 impl AppConfig {
@@ -63,6 +66,7 @@ pub struct HealthResponse {
     pub allowed_ports: Vec<u16>,
     pub allow_loopback: bool,
     pub allow_private_ips: bool,
+    pub artifact_public_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +75,7 @@ struct AppState {
     destination_policy: DestinationPolicy,
     verifier_config: VerifierConfig,
     health: HealthResponse,
+    artifact_signer: ArtifactSigner,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,7 +90,7 @@ pub enum SessionStatus {
 pub struct SessionSnapshot {
     pub status: SessionStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<VerifierOutput>,
+    pub artifact: Option<SignedArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -106,7 +111,7 @@ impl SessionStore {
             session_id.to_string(),
             SessionSnapshot {
                 status: SessionStatus::Running,
-                output: None,
+                artifact: None,
                 error: None,
             },
         );
@@ -114,13 +119,13 @@ impl SessionStore {
         Ok(())
     }
 
-    pub async fn complete(&self, session_id: &str, output: VerifierOutput) {
+    pub async fn complete(&self, session_id: &str, artifact: SignedArtifact) {
         let mut inner = self.inner.lock().await;
         inner.insert(
             session_id.to_string(),
             SessionSnapshot {
                 status: SessionStatus::Complete,
-                output: Some(output),
+                artifact: Some(artifact),
                 error: None,
             },
         );
@@ -132,7 +137,7 @@ impl SessionStore {
             session_id.to_string(),
             SessionSnapshot {
                 status: SessionStatus::Failed,
-                output: None,
+                artifact: None,
                 error: Some(error),
             },
         );
@@ -253,10 +258,9 @@ impl DestinationPolicy {
             .filter(|address| self.allows_socket_addr(*address))
             .collect();
 
-        let address = resolved
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no resolved address for `{host}:{port}` passed policy checks"))?;
+        let address = resolved.into_iter().next().ok_or_else(|| {
+            anyhow!("no resolved address for `{host}:{port}` passed policy checks")
+        })?;
 
         Ok(ResolvedDestination {
             host: host.to_string(),
@@ -277,9 +281,16 @@ pub fn app(config: AppConfig) -> Router {
         status: "ok",
         wasm_pkg_present: config.wasm_pkg_dir.join("tlsn_wasm.js").exists(),
         allowed_hosts: config.destination_policy.allowed_hosts.clone(),
-        allowed_ports: config.destination_policy.allowed_ports.iter().copied().collect(),
+        allowed_ports: config
+            .destination_policy
+            .allowed_ports
+            .iter()
+            .copied()
+            .collect(),
         allow_loopback: config.destination_policy.allow_loopback,
         allow_private_ips: config.destination_policy.allow_private_ips,
+        artifact_public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(config.artifact_signer.public_key()),
     };
 
     let state = AppState {
@@ -287,6 +298,7 @@ pub fn app(config: AppConfig) -> Router {
         destination_policy: config.destination_policy,
         verifier_config: config.verifier_config,
         health,
+        artifact_signer: config.artifact_signer,
     };
 
     let static_index = config.static_dir.join("index.html");
@@ -361,7 +373,11 @@ async fn tcp_ws_handler(
     State(state): State<AppState>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    match state.destination_policy.resolve(&query.host, query.port).await {
+    match state
+        .destination_policy
+        .resolve(&query.host, query.port)
+        .await
+    {
         Ok(destination) => ws
             .max_frame_size(BRIDGE_BUFFER_SIZE)
             .max_message_size(BRIDGE_BUFFER_SIZE)
@@ -374,15 +390,21 @@ async fn tcp_ws_handler(
     }
 }
 
-async fn run_notary_session(
-    state: AppState,
-    session_id: String,
-    socket: WebSocket,
-) -> Result<()> {
+async fn run_notary_session(state: AppState, session_id: String, socket: WebSocket) -> Result<()> {
     match run_verifier(socket, state.verifier_config.clone()).await {
         Ok(output) => {
             info!("notary session `{session_id}` completed");
-            state.sessions.complete(&session_id, output).await;
+            let output =
+                serde_json::to_value(output).context("failed to encode verifier output")?;
+            let issued_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .context("system clock is before Unix epoch")?
+                .as_secs();
+            let artifact = state
+                .artifact_signer
+                .sign(&session_id, issued_at, output)
+                .context("failed to sign portable artifact")?;
+            state.sessions.complete(&session_id, artifact).await;
             Ok(())
         }
         Err(err) => {
@@ -392,7 +414,10 @@ async fn run_notary_session(
     }
 }
 
-async fn run_verifier(socket: WebSocket, verifier_config: VerifierConfig) -> Result<VerifierOutput> {
+async fn run_verifier(
+    socket: WebSocket,
+    verifier_config: VerifierConfig,
+) -> Result<VerifierOutput> {
     let (browser_side, verifier_side) = tokio::io::duplex(BRIDGE_BUFFER_SIZE);
     let (browser_reader, browser_writer) = tokio::io::split(browser_side);
     let (ws_sender, ws_receiver) = socket.split();
@@ -465,7 +490,10 @@ where
         }
     }
 
-    writer.shutdown().await.context("failed to close IO writer")?;
+    writer
+        .shutdown()
+        .await
+        .context("failed to close IO writer")?;
     Ok(())
 }
 
@@ -585,7 +613,10 @@ mod tests {
     async fn session_store_rejects_duplicate_running_sessions() {
         let store = SessionStore::default();
 
-        store.start("abc").await.expect("first session should start");
+        store
+            .start("abc")
+            .await
+            .expect("first session should start");
         let duplicate = store.start("abc").await.expect_err("duplicate should fail");
         assert_eq!(duplicate, SessionStoreError::Duplicate("abc".to_string()));
     }
@@ -598,15 +629,10 @@ mod tests {
         store
             .complete(
                 "abc",
-                VerifierOutput {
-                    server_name: Some("example.com".to_string()),
-                    connection_info: tlsn_sdk_core::ConnectionInfo {
-                        time: 1,
-                        version: tlsn_sdk_core::TlsVersion::V1_3,
-                        transcript_length: tlsn_sdk_core::TranscriptLength { sent: 10, recv: 20 },
-                    },
-                    transcript: None,
-                },
+                ArtifactSigner::from_bytes(&[7; 32])
+                    .unwrap()
+                    .sign("abc", 1, serde_json::json!({"serverName": "example.com"}))
+                    .unwrap(),
             )
             .await;
 
@@ -614,10 +640,12 @@ mod tests {
         assert!(matches!(snapshot.status, SessionStatus::Complete));
         assert_eq!(
             snapshot
-                .output
-                .and_then(|output| output.server_name)
+                .artifact
+                .and_then(|artifact| artifact.payload.verifier_output["serverName"]
+                    .as_str()
+                    .map(str::to_string))
                 .as_deref(),
-            Some("example.com")
+            Some("example.com"),
         );
     }
 }
