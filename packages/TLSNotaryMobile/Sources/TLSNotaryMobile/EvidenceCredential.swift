@@ -76,7 +76,7 @@ public struct WalletCredentialOffer: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case credentialOfferURI = "credential_offer_uri"
-        case walletURI = "wallet_uri"
+        case walletURI = "deep_link"
         case expiresIn = "expires_in"
     }
 }
@@ -230,8 +230,8 @@ public actor TLSNotaryMobileClient {
             )
         }
         let endpoint = issuer.baseURL
-            .appendingPathComponent("api")
-            .appendingPathComponent("evidence")
+            .appendingPathComponent("evidence-offers")
+            .appendingPathComponent("tlsnotary")
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

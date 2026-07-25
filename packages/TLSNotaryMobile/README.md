@@ -51,6 +51,8 @@ base64url public key from `/api/health`, decode it to SEC1 bytes, and pin those
 bytes in the app. An ephemeral development key is generated when the variable
 is absent; credentials from that key will not remain anchored across restarts.
 
-The exported envelope is not automatically a trusted EUDI credential. An
-EUDI-recognized issuer can validate its embedded TLSNotary evidence and issue a
-profiled credential through OpenID4VCI.
+The configured VCIssuer validates the embedded artifact at
+`/evidence-offers/tlsnotary` and returns an OpenID4VCI authorization-code
+`deep_link` for EUWallet or another compatible wallet. The resulting
+`dev.advatar.tlsn.evidence.1` credential remains development TLSNotary
+evidence; it is not promoted to PID or (Q)EAA.

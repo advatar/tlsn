@@ -56,3 +56,19 @@ import Testing
         try await client.prepareWalletOffer(from: evidence)
     }
 }
+
+@Test func decodesVCIssuerAuthorizationCodeOffer() throws {
+    let response = Data(
+        """
+        {
+          "credential_offer_uri": "https://issuer.example/credential-offer/one",
+          "deep_link": "openid-credential-offer://?credential_offer_uri=https%3A%2F%2Fissuer.example%2Fcredential-offer%2Fone",
+          "expires_in": 300
+        }
+        """.utf8
+    )
+    let offer = try JSONDecoder().decode(WalletCredentialOffer.self, from: response)
+    #expect(offer.credentialOfferURI.absoluteString.hasSuffix("/credential-offer/one"))
+    #expect(offer.walletURI.scheme == "openid-credential-offer")
+    #expect(offer.expiresIn == 300)
+}

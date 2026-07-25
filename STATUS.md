@@ -109,3 +109,11 @@ The next production milestone is to replace the in-memory grant store with a
 transactional shared store, deploy behind HTTPS, add credential status and
 revocation, and map the evidence credential into a wallet-supported EUDI
 profile under an accredited issuer trust framework.
+
+## CR-010
+
+- [x] Replace the prototype issuer handoff contract with `../VCIssuer`'s evidence-ingestion endpoint.
+- [x] Decode VCIssuer's `deep_link` authorization-code offer response in Swift.
+- [x] Preserve the signed notary artifact as the issuer input and reject unconfigured handoff.
+- [x] Add exact response-contract tests and update Swift integration documentation.
+- [x] Run Swift and iOS Simulator builds and commit only CR-010 files.
