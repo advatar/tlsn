@@ -117,3 +117,14 @@ profile under an accredited issuer trust framework.
 - [x] Preserve the signed notary artifact as the issuer input and reject unconfigured handoff.
 - [x] Add exact response-contract tests and update Swift integration documentation.
 - [x] Run Swift and iOS Simulator builds and commit only CR-010 files.
+
+## ActiveChain issue #169 — portable credential conformance
+
+- [ ] Replace the opaque holder-signed JSON wrapper with a versioned, bounded evidence envelope
+      that preserves notary/server, transcript/disclosure, holder, schema, freshness/status, and
+      assurance provenance without exposing the source transcript.
+- [ ] Make issuer-upgraded assurance structurally dependent on an issuer-authorization commitment;
+      self-issued evidence must remain visibly non-regulated.
+- [ ] Publish deterministic positive and malformed vectors shared with wallet and ActiveChain
+      adapters, and cover holder/signature/substitution/freshness failures with unit tests.
+- [ ] Run normal affected Rust and Swift package tests and strict affected-target linting.
