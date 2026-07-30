@@ -125,8 +125,10 @@ profile under an accredited issuer trust framework.
       assurance provenance without exposing the source transcript.
 - [x] Make issuer-upgraded assurance structurally dependent on an issuer-authorization commitment;
       self-issued evidence must remain visibly non-regulated.
-- [ ] Publish deterministic positive and malformed vectors shared with wallet and ActiveChain
+- [x] Publish deterministic positive and malformed vectors shared with wallet and ActiveChain
       adapters, and cover holder/signature/substitution/freshness failures with unit tests.
+      The 17-case TSV is byte-identical in all three repositories (SHA-256
+      `668f87d8` prefix) and its closed decision table is consumed by an affected Rust test.
 - [x] Run normal affected Rust and Swift package tests and strict affected-target linting.
   - [x] Seven affected Rust tests, six Swift package tests, the complete five-slice XCFramework
         rebuild, and touched-crate Clippy pass locally; repository-wide/transitive
