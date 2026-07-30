@@ -32,6 +32,23 @@ public struct EvidenceCredential: Codable, Sendable {
     public let holderSignature: String
     public let signatureAlgorithm: String
 
+    public func portableEvidence() throws -> PortableEvidenceV1 {
+        guard credential.utf8.count <= 2 * 1024 * 1024 else {
+            throw TLSNotaryMobileError.invalidRustResponse
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let document = try decoder.decode(
+            EvidenceCredentialDocument.self,
+            from: Data(credential.utf8)
+        )
+        guard let evidence = document.evidence.first?.portableEvidence else {
+            throw TLSNotaryMobileError.invalidRustResponse
+        }
+        try evidence.validate()
+        return evidence
+    }
+
     public func verifyHolderSignature() -> Bool {
         guard
             let publicKeyBytes = Data(base64URLEncoded: holderPublicKey),
@@ -43,6 +60,60 @@ public struct EvidenceCredential: Codable, Sendable {
         }
         return publicKey.isValidSignature(signature, for: Data(credential.utf8))
     }
+}
+
+public enum PortableEvidenceAssurance: String, Codable, Sendable {
+    case tlsNotarizedEvidence
+    case holderSelfIssued
+    case issuerUpgraded
+    case regulatedAttestation
+}
+
+public struct PortableEvidenceV1: Codable, Sendable, Equatable {
+    public let version: Int
+    public let notaryIdentityCommitment: String
+    public let serverIdentityCommitment: String
+    public let transcriptCommitment: String
+    public let disclosedFieldsCommitment: String
+    public let holderBindingCommitment: String
+    public let schemaCommitment: String
+    public let observedAt: Date
+    public let freshUntil: Date
+    public let statusCommitment: String
+    public let assurance: PortableEvidenceAssurance
+    public let issuerAuthorizationCommitment: String?
+
+    public func validate(now: Date? = nil) throws {
+        let commitments = [
+            notaryIdentityCommitment, serverIdentityCommitment, transcriptCommitment,
+            disclosedFieldsCommitment, holderBindingCommitment, schemaCommitment,
+            statusCommitment,
+        ]
+        guard version == 1,
+              commitments.allSatisfy(Self.isDigest384),
+              freshUntil > observedAt,
+              now.map({ $0 < freshUntil }) ?? true,
+              (assurance == .issuerUpgraded || assurance == .regulatedAttestation)
+                  == (issuerAuthorizationCommitment != nil),
+              issuerAuthorizationCommitment.map(Self.isDigest384) ?? true
+        else {
+            throw TLSNotaryMobileError.invalidRustResponse
+        }
+    }
+
+    private static func isDigest384(_ value: String) -> Bool {
+        value.utf8.count == 96 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        } && value.utf8.contains { $0 != 48 }
+    }
+}
+
+private struct EvidenceCredentialDocument: Decodable {
+    struct Evidence: Decodable {
+        let portableEvidence: PortableEvidenceV1?
+    }
+
+    let evidence: [Evidence]
 }
 
 public struct NotaryConfiguration: Sendable {
