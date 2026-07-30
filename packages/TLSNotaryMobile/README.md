@@ -20,6 +20,13 @@ Add `packages/TLSNotaryMobile` as a local package in Xcode. The package exposes
 `TLSNotaryMobileClient`, `EvidenceRequest`, `SecureEnclaveHolderKey`, and an
 iOS-only `WebEvidenceView`.
 
+Every newly constructed credential carries `portableEvidence` version 1. This object contains only
+domain-separated 48-byte commitments for the notary, server, transcript, disclosed fields, holder,
+schema, and status, plus a five-minute freshness interval and an explicit assurance class. It never
+contains the response body or TLS transcript. The mobile producer emits `holderSelfIssued` with no
+issuer-authorization commitment. Decoders reject upgraded or regulated assurance without a nonzero
+48-byte authorization commitment, and reject such a commitment on either lower assurance class.
+
 Configure the client with the URL of the companion browser-demo notary/relay:
 
 ```swift

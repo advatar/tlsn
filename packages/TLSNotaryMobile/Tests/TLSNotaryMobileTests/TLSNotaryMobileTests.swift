@@ -18,6 +18,40 @@ import Testing
     #expect(result.verifyHolderSignature())
     #expect(result.credential.contains("TlsNotaryEvidenceCredential"))
     #expect(result.credential.contains("https://example.com"))
+    let portable = try result.portableEvidence()
+    #expect(portable.version == 1)
+    #expect(portable.assurance == .holderSelfIssued)
+    #expect(portable.issuerAuthorizationCommitment == nil)
+    #expect(portable.transcriptCommitment.count == 96)
+    #expect(portable.freshUntil > portable.observedAt)
+}
+
+@Test func rejectsMalformedOrPromotedPortableEvidence() throws {
+    let digest = String(repeating: "1", count: 96)
+    let credential = EvidenceCredential(
+        credential: """
+        {"evidence":[{"portableEvidence":{
+          "version":1,
+          "notaryIdentityCommitment":"\(digest)",
+          "serverIdentityCommitment":"\(digest)",
+          "transcriptCommitment":"\(digest)",
+          "disclosedFieldsCommitment":"\(digest)",
+          "holderBindingCommitment":"\(digest)",
+          "schemaCommitment":"\(digest)",
+          "observedAt":"2026-07-22T12:00:00Z",
+          "freshUntil":"2026-07-22T12:05:00Z",
+          "statusCommitment":"\(digest)",
+          "assurance":"issuerUpgraded",
+          "issuerAuthorizationCommitment":null
+        }}]}
+        """,
+        holderPublicKey: "",
+        holderSignature: "",
+        signatureAlgorithm: "ES256"
+    )
+    #expect(throws: TLSNotaryMobileError.self) {
+        try credential.portableEvidence()
+    }
 }
 
 @Test func rejectsNonHTTPSBeforeCallingRust() async throws {

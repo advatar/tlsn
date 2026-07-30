@@ -8,16 +8,19 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use url::Url;
 
 mod notarize;
 
-pub use notarize::{TlsnMobileCallback, tlsn_mobile_notarize};
+pub use notarize::{tlsn_mobile_notarize, TlsnMobileCallback};
 
 const MAX_INPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DISCLOSURES: usize = 128;
+const PORTABLE_EVIDENCE_VERSION: u32 = 1;
+const DEFAULT_FRESHNESS_SECONDS: i64 = 300;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -111,7 +114,45 @@ fn create_evidence(request: EvidenceRequest) -> Result<Value, &'static str> {
         return Err("too many disclosed fields");
     }
 
-    let response_hash = blake3::hash(request.response_body.as_bytes()).to_hex();
+    let response_body = STANDARD
+        .decode(request.response_body.as_bytes())
+        .map_err(|_| "response body is not valid base64")?;
+    if response_body.len() > MAX_INPUT_BYTES {
+        return Err("response body exceeds 2 MiB");
+    }
+    let retrieved_at = chrono::DateTime::parse_from_rfc3339(&request.retrieved_at)
+        .map_err(|_| "retrieval time is not RFC 3339")?;
+    let fresh_until = retrieved_at
+        .checked_add_signed(chrono::Duration::seconds(DEFAULT_FRESHNESS_SECONDS))
+        .ok_or("freshness interval overflows")?;
+    let mut disclosed_fields = request.disclosed_fields;
+    disclosed_fields.sort();
+    if disclosed_fields.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("disclosed fields must be unique");
+    }
+
+    let attestation = serde_json::to_vec(&request.notary_attestation)
+        .map_err(|_| "notary attestation cannot be canonicalized")?;
+    let disclosures = serde_json::to_vec(&disclosed_fields)
+        .map_err(|_| "disclosed fields cannot be canonicalized")?;
+    let schema = b"dev.advatar.tlsn.evidence.1";
+    let status = b"active";
+    let portable_evidence = json!({
+        "version": PORTABLE_EVIDENCE_VERSION,
+        "notaryIdentityCommitment": commitment("notary-identity", &attestation),
+        "serverIdentityCommitment": commitment("server-identity", origin.as_bytes()),
+        "transcriptCommitment": commitment("transcript", &response_body),
+        "disclosedFieldsCommitment": commitment("disclosed-fields", &disclosures),
+        "holderBindingCommitment": commitment("holder-binding", request.holder.as_bytes()),
+        "schemaCommitment": commitment("schema", schema),
+        "observedAt": request.retrieved_at,
+        "freshUntil": fresh_until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "statusCommitment": commitment("status", status),
+        "assurance": "holderSelfIssued",
+        "issuerAuthorizationCommitment": Value::Null,
+    });
+
+    let response_hash = blake3::hash(&response_body).to_hex();
     Ok(json!({
         "@context": ["https://www.w3.org/ns/credentials/v2"],
         "type": ["VerifiableCredential", "TlsNotaryEvidenceCredential"],
@@ -123,13 +164,26 @@ fn create_evidence(request: EvidenceRequest) -> Result<Value, &'static str> {
             "url": url.as_str(),
             "httpMethod": "GET",
             "responseBodyHash": format!("blake3:{response_hash}"),
-            "disclosedFields": request.disclosed_fields,
+            "disclosedFields": disclosed_fields,
         },
         "evidence": [{
             "type": "TlsNotaryEvidence",
             "notaryAttestation": request.notary_attestation,
+            "portableEvidence": portable_evidence,
         }]
     }))
+}
+
+fn commitment(domain: &str, value: &[u8]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"ADVAtAR-TLS-CREDENTIAL-COMMITMENT-V1");
+    hasher.update(&(domain.len() as u32).to_be_bytes());
+    hasher.update(domain.as_bytes());
+    hasher.update(&(value.len() as u64).to_be_bytes());
+    hasher.update(value);
+    let mut bytes = [0_u8; 48];
+    hasher.finalize_xof().fill(&mut bytes);
+    hex::encode(bytes)
 }
 
 fn error_json(error: &str) -> String {
@@ -151,7 +205,7 @@ mod tests {
             "url": url,
             "method": "GET",
             "retrievedAt": "2026-07-22T12:00:00Z",
-            "responseBody": "{\"account\":\"verified\"}",
+            "responseBody": STANDARD.encode("{\"account\":\"verified\"}"),
             "disclosedFields": ["/account"],
             "holder": "did:key:test-holder",
             "notaryAttestation": {"signature": "test"}
@@ -180,6 +234,76 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("blake3:"));
+        let portable = &value["evidence"][0]["portableEvidence"];
+        assert_eq!(portable["version"], 1);
+        assert_eq!(portable["assurance"], "holderSelfIssued");
+        assert!(portable["issuerAuthorizationCommitment"].is_null());
+        for field in [
+            "notaryIdentityCommitment",
+            "serverIdentityCommitment",
+            "transcriptCommitment",
+            "disclosedFieldsCommitment",
+            "holderBindingCommitment",
+            "schemaCommitment",
+            "statusCommitment",
+        ] {
+            assert_eq!(portable[field].as_str().unwrap().len(), 96);
+        }
+        assert_eq!(portable["freshUntil"], "2026-07-22T12:05:00Z");
+    }
+
+    #[test]
+    fn commitments_are_deterministic_and_bind_holder_and_transcript() {
+        let original =
+            serde_json::from_str::<EvidenceRequest>(&request("https://example.com")).unwrap();
+        let first = create_evidence(original).unwrap();
+        let second = create_evidence(
+            serde_json::from_str::<EvidenceRequest>(&request("https://example.com")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            first["evidence"][0]["portableEvidence"],
+            second["evidence"][0]["portableEvidence"]
+        );
+
+        let mut changed: Value = serde_json::from_str(&request("https://example.com")).unwrap();
+        changed["holder"] = "did:key:other-holder".into();
+        changed["responseBody"] = STANDARD.encode("different").into();
+        let changed = create_evidence(serde_json::from_value(changed).unwrap()).unwrap();
+        assert_ne!(
+            first["evidence"][0]["portableEvidence"]["holderBindingCommitment"],
+            changed["evidence"][0]["portableEvidence"]["holderBindingCommitment"]
+        );
+        assert_ne!(
+            first["evidence"][0]["portableEvidence"]["transcriptCommitment"],
+            changed["evidence"][0]["portableEvidence"]["transcriptCommitment"]
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_disclosures_and_malformed_time_or_body() {
+        for (field, value, expected) in [
+            (
+                "retrievedAt",
+                json!("not-a-time"),
+                "retrieval time is not RFC 3339",
+            ),
+            (
+                "responseBody",
+                json!("%%%"),
+                "response body is not valid base64",
+            ),
+            (
+                "disclosedFields",
+                json!(["/account", "/account"]),
+                "disclosed fields must be unique",
+            ),
+        ] {
+            let mut input: Value = serde_json::from_str(&request("https://example.com")).unwrap();
+            input[field] = value;
+            let parsed = serde_json::from_value(input).unwrap();
+            assert_eq!(create_evidence(parsed), Err(expected));
+        }
     }
 
     #[test]
