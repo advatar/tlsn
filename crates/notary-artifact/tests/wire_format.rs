@@ -5,30 +5,34 @@
 //! artifact travels as. These tests pin those bytes, because an independent
 //! verifier (VCIssuer) re-derives the signed message from them.
 //!
-//! # A known portability hazard
+//! # The portability hazard these guard against
 //!
-//! Both signatures cover `serde_json::to_vec(&payload)`, and
+//! Both signatures cover the serialized payload, and
 //! `ArtifactPayload::verifier_output` is a `serde_json::Value`. Whether a
 //! `Value` map serializes with sorted keys (`BTreeMap`) or in insertion order
 //! (`IndexMap`) is decided by serde_json's `preserve_order` feature — which is
-//! set by *whole-graph feature unification*, not by this crate:
+//! set by *whole-graph feature unification*, not by this crate. In this
+//! workspace it arrives transitively via `tlsn-examples` -> noir, so the same
+//! source produced different bytes depending on how it was built:
 //!
 //! ```text
 //! cargo test -p tlsn-notary-artifact   -> {"apple":2,"zebra":1}   (sorted)
 //! cargo test --workspace               -> {"zebra":1,"apple":2}   (insertion)
 //! ```
 //!
-//! In this workspace `preserve_order` is pulled in transitively via
-//! `tlsn-examples` -> noir. A notary and a verifier built with different feature
-//! resolutions therefore compute different messages from the same artifact, and
-//! a valid signature is rejected. `verify()` re-serializing `self.payload`
-//! rather than checking the bytes as received is what exposes this.
+//! A notary and a verifier built with different resolutions therefore derived
+//! different messages from one artifact and rejected each other's signatures.
+//! `tlsn_notary_artifact::signing_bytes` fixes this by emitting object keys
+//! sorted at every depth, and `sign` stores that canonical form so the bytes on
+//! the wire are the bytes signed.
 //!
-//! `reserialization_is_faithful_to_received_bytes` is the tripwire for that and
-//! is `#[ignore]`d until the signing input is made canonical. Every other test
-//! here is written to be order-independent so it holds under both resolutions.
+//! Every test here is order-independent and passes under both resolutions; the
+//! `signing_bytes_are_canonical_regardless_of_feature_resolution` and
+//! `canonical_bytes_are_a_fixpoint` tests are the specific regression guards.
 
-use tlsn_notary_artifact::{ARTIFACT_VERSION, ArtifactError, ArtifactSigner, SignedArtifact};
+use tlsn_notary_artifact::{
+    ARTIFACT_VERSION, ArtifactError, ArtifactPayload, ArtifactSigner, SignedArtifact, signing_bytes,
+};
 
 /// A fixed signing key, so the pinned vectors below are reproducible.
 const SIGNER_SEED: [u8; 32] = [7u8; 32];
@@ -40,10 +44,8 @@ fn signer() -> ArtifactSigner {
     ArtifactSigner::from_bytes(&SIGNER_SEED).expect("valid P-256 scalar")
 }
 
-/// Verifier output whose object keys are **already in sorted order**, so it
-/// serializes identically under both `preserve_order` resolutions.
-///
-/// Needing this caveat at all is the hazard described in the module docs.
+/// Verifier output whose keys are already sorted, so the pinned byte vectors
+/// below read the same as what a canonicalizing signer emits.
 fn order_stable_output() -> serde_json::Value {
     serde_json::json!({"alpha": 1, "beta": 2})
 }
@@ -293,36 +295,124 @@ fn payload_tampering_survives_no_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// Known bug tripwire
+// Canonical signing input
 // ---------------------------------------------------------------------------
 
-/// Re-serializing a received payload must reproduce the bytes exactly as they
-/// arrived, because that is the message the signature covers.
+/// The signed bytes must not depend on serde_json's `preserve_order` feature.
 ///
-/// **Currently fails**, and is ignored rather than deleted. `verify()` calls
-/// `serde_json::to_vec(&self.payload)`, so the message depends on how *this*
-/// build orders `Value` map keys — which whole-graph feature unification
-/// decides (see module docs). With `preserve_order` off, the keys below are
-/// re-emitted sorted, producing a different message than the notary signed, and
-/// a valid artifact is rejected.
-///
-/// Un-ignore once the signed input is canonical — either by verifying over the
-/// received bytes instead of re-serializing, or by pinning a canonical
-/// serialization of `verifier_output`.
+/// This is the regression test for the bug described in the module docs. The
+/// expected value has `verifierOutput` keys sorted, which is what `signing_bytes`
+/// emits under *either* feature resolution — so this holds for
+/// `-p tlsn-notary-artifact` and `--workspace` alike. Before the fix the two
+/// produced different bytes and this assertion could not be written at all.
 #[test]
-#[ignore = "known bug: signed message depends on serde_json/preserve_order; see module docs"]
-fn reserialization_is_faithful_to_received_bytes() {
-    // Keys deliberately not in sorted order.
-    let payload_json = r#"{"version":"tlsn.notary-artifact.v1","sessionId":"s","issuedAt":1,"verifierOutput":{"zebra":1,"apple":2}}"#;
-    let envelope = format!(
-        r#"{{"payload":{payload_json},"algorithm":"ES256","publicKey":"AA","signature":"AA"}}"#
-    );
+fn signing_bytes_are_canonical_regardless_of_feature_resolution() {
+    let payload = ArtifactPayload {
+        version: ARTIFACT_VERSION.into(),
+        session_id: "s".into(),
+        issued_at: 1,
+        // Deliberately unsorted, and nested.
+        verifier_output: serde_json::json!({
+            "zebra": 1,
+            "apple": {"delta": 4, "charlie": 3},
+        }),
+    };
 
-    let parsed: SignedArtifact = serde_json::from_str(&envelope).expect("artifact deserializes");
-    let reserialized = serde_json::to_string(&parsed.payload).expect("payload serializes");
+    let bytes = signing_bytes(&payload).expect("payload serializes");
 
     assert_eq!(
-        reserialized, payload_json,
-        "re-serialization must not reorder verifierOutput keys"
+        String::from_utf8(bytes).expect("payload is UTF-8"),
+        concat!(
+            r#"{"version":"tlsn.notary-artifact.v1","sessionId":"s","issuedAt":1,"#,
+            r#""verifierOutput":{"apple":{"charlie":3,"delta":4},"zebra":1}}"#,
+        ),
+        "object keys must be emitted sorted, at every depth"
     );
+}
+
+/// Sorted order is the fixpoint that makes the fix work for *external* verifiers:
+/// a consumer that parses the emitted bytes and re-serializes them — what
+/// VCIssuer does — must reproduce them exactly.
+#[test]
+fn canonical_bytes_are_a_fixpoint() {
+    let payload = ArtifactPayload {
+        version: ARTIFACT_VERSION.into(),
+        session_id: "s".into(),
+        issued_at: 1,
+        verifier_output: serde_json::json!({"zebra": 1, "apple": [{"b": 1, "a": 2}]}),
+    };
+
+    let once = signing_bytes(&payload).expect("payload serializes");
+    let reparsed: ArtifactPayload =
+        serde_json::from_slice(&once).expect("canonical bytes deserialize");
+    let twice = signing_bytes(&reparsed).expect("payload serializes");
+    assert_eq!(once, twice, "canonicalization must be idempotent");
+
+    // A plain re-serialize agrees too, which is what an external verifier that
+    // knows nothing about `signing_bytes` relies on.
+    let naive = serde_json::to_vec(&reparsed).expect("payload serializes");
+    assert_eq!(
+        naive, once,
+        "re-serializing canonical bytes must reproduce them"
+    );
+}
+
+/// `sign` must store the canonical form, so the artifact on the wire already is
+/// what was signed — otherwise an external verifier re-deriving from the emitted
+/// JSON computes a different message.
+#[test]
+fn sign_emits_canonical_payload() {
+    let signer = signer();
+    let artifact = signer
+        .sign(
+            SESSION_ID,
+            ISSUED_AT,
+            serde_json::json!({"zebra": 1, "apple": 2}),
+        )
+        .expect("signing succeeds");
+
+    let json = serde_json::to_string(&artifact).expect("artifact serializes");
+    assert!(
+        json.contains(r#""verifierOutput":{"apple":2,"zebra":1}"#),
+        "emitted payload must be canonical: {json}"
+    );
+
+    // The naive re-derivation an external verifier performs must match.
+    let naive = serde_json::to_vec(&artifact.payload).expect("payload serializes");
+    assert_eq!(
+        naive,
+        signing_bytes(&artifact.payload).expect("payload serializes")
+    );
+
+    artifact
+        .verify(&signer.public_key())
+        .expect("canonical artifact verifies");
+}
+
+/// An intermediary that reorders object keys — a proxy, a JSON library, a
+/// database round trip — must not invalidate an artifact, because the signature
+/// covers the canonical form rather than the received byte order.
+#[test]
+fn key_reordering_by_an_intermediary_does_not_break_verification() {
+    let signer = signer();
+    let artifact = signer
+        .sign(
+            SESSION_ID,
+            ISSUED_AT,
+            serde_json::json!({"alpha": 1, "beta": 2}),
+        )
+        .expect("signing succeeds");
+
+    let json = serde_json::to_string(&artifact)
+        .expect("artifact serializes")
+        // Same content, keys swapped.
+        .replace(
+            r#""verifierOutput":{"alpha":1,"beta":2}"#,
+            r#""verifierOutput":{"beta":2,"alpha":1}"#,
+        );
+
+    let parsed: SignedArtifact = serde_json::from_str(&json).expect("artifact deserializes");
+    parsed
+        .verify(&signer.public_key())
+        .expect("reordered but semantically identical output must still verify");
 }
