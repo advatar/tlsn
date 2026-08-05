@@ -43,7 +43,7 @@ impl Tls13TestCase {
             // Offer 1.3 only. Without this the default 1.2-only pin makes the
             // server negotiate 1.2 and these cases fail on the version
             // assertion below, never reaching the 1.3 path they exist to test.
-            .offered_versions(OfferedVersions::Tls13Only)
+            .offered_versions(OfferedVersions::Tls13Unsafe)
             .root_store(RootCertStore {
                 roots: self.roots.clone(),
             });

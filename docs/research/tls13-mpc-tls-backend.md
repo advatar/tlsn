@@ -61,22 +61,120 @@ ones I would make:
 
 ---
 
-## 2. Current TLS 1.3 state in this fork (what actually needs fixing)
+## 2. Current TLS 1.3 state in this fork
 
-There is already a partial, **non-functional** 1.3 path. The rewrite should replace it, not extend it.
+> **Corrected 2026-08-05.** An earlier revision of this section claimed the 1.3 path was
+> non-functional because "the follower never receives the server handshake records (the leader
+> captures them but does not relay)", causing `validate_tls13_finished` to always error *"server
+> finished was not observed in the transcript."* **That diagnosis was wrong on every point**, and the
+> conclusion drawn from it — that a fresh backend was needed — did not follow. What was actually
+> verified:
+>
+> - The relay exists. `crates/mpc-tls/src/leader.rs` sends `Message::Tls13RecvRecord` and
+>   `crates/mpc-tls/src/follower.rs` receives it into `tls13_recv_records`.
+> - `validate_tls13_finished` was never reached. Every `tls13_*` test failed on its **first**
+>   assertion — `left: V1_2, right: V1_3` — because `crates/tlsn/src/prover.rs` hard-pinned the
+>   offered version to 1.2, so no session ever negotiated 1.3.
+> - Once 1.3 can be offered, the path works. `validate_tls13_finished` is reached and passes; this was
+>   confirmed by temporarily making the `TlsVersion::V1_3` arm return an error and observing both
+>   prover and verifier fail, which proves the code executes rather than being skipped.
+>
+> Lesson for anyone extending this document: confirming that a symbol *exists* in two files is not
+> the same as confirming the logic between them is missing. Run the tests.
 
-- `crates/mpc-tls/src/tls13.rs` — incremental 1.3 leader/follower code. The **follower never receives the
-  server handshake records** (the leader captures them but does not relay; the follower's
-  `tls13_recv_records` is empty), so…
-- `crates/core/src/transcript/tls.rs` — `validate_tls13_finished` always errors
-  **"server finished was not observed in the transcript."** This is the concrete symptom.
-- `crates/tlsn/tests/tls13_matrix.rs`, `crates/tlsn/tests/tls13_interop.rs` — fixtures/tests exist but do
-  not exercise a working path.
+> ## ⚠ The 1.3 path has no security guarantee. Do not present it as supported.
+>
+> **The prover learns the TLS 1.3 application traffic keys in the clear.** In
+> `crates/mpc-tls/src/tls13.rs`, `set_handshake_hash` calls `vm.decode(..)` on all four application
+> keys (`client_write_key`, `client_iv`, `server_write_key`, `server_iv`) and executes, storing the
+> results in a field named `clear_application`. `decrypt_tls13_record` then uses a **plain
+> `Aes128Gcm`** with those keys. A `decode` reveals a value to *both* parties.
+>
+> This voids provenance. A prover holding `server_write_key` can encrypt arbitrary bytes under the
+> server's key and present them as the server's response, which is the exact attack the protocol
+> exists to prevent. It directly contradicts the invariant stated in section 3 of this document:
+> *neither prover nor verifier ever holds the complete server application traffic key*.
+>
+> The contrast with the working path makes the gap unambiguous:
+>
+> | | TLS 1.2 | TLS 1.3 |
+> |---|---|---|
+> | Application keys | stay VM references (`Array<U8, 16>`), passed to `record_layer.set_keys` | `vm.decode(..)` → plaintext `[u8; 16]` |
+> | AEAD | joint, in MPC | local `Aes128Gcm` in the leader |
+>
+> And `crates/components/hmac-sha256/src/tls13.rs` uses `mask_private` / `mask_blind` exactly where
+> only the leader should learn a value (the handshake secrets), so the distinction between masking and
+> decoding was understood — the plain decode of the *application* keys is the gap, not an idiom.
+>
+> **The passing tests cannot detect this.** They verify plumbing against honest servers; nothing
+> exercises a malicious prover. A green matrix here means records flow, not that the guarantee holds.
+> Until this is closed, offering 1.3 is explicitly unsafe — hence
+> [`OfferedVersions::Tls13Unsafe`] and the runtime warning the prover emits.
+>
+> ### Closing it looks tractable — likely rewiring, not new cryptography
+>
+> A first estimate called this "substantial architectural work". That was too pessimistic. The
+> existing TLS 1.2 joint AEAD appears reusable almost as-is:
+>
+> - **The nonce maps exactly onto the existing interface.** A 1.3 nonce is `iv XOR seq`, with the
+>   64-bit sequence number XORed into the **last 8 bytes**. So the leading 4 bytes are constant for
+>   the connection and only the trailing 8 vary — which is precisely `MpcAesGcm`'s existing
+>   `set_iv(Array<U8, 4>)` plus `Nonce = Array<U8, 8>` split. For 1.3 the "explicit nonce" is a
+>   computed value rather than one read off the wire. No new circuits.
+> - **The AAD is already parameterized.** `record_layer.rs` passes `aad: Vec<u8>`, built by
+>   `make_tls12_aad`; `make_tls13_aad` already exists in `crates/mpc-tls/src/tls13.rs`. Swap the
+>   constructor.
+> - **Inner plaintext** (content type plus zero padding) is framing rather than cryptography, and the
+>   reference oracle already implements and tests it.
+>
+> One feasibility question remains open, and it needs the `mpz` sources rather than this checkout:
+> whether a VM `Array<U8, 12>` can be split into `[0..4]` and `[4..12]` sub-references. If it cannot,
+> the alternative is to have `Tls13KeySched` emit the IV as two arrays directly — it derives them via
+> HKDF inside the VM, so producing 4+8 halves is a local change.
+>
+> Correctness is checkable against `crates/tls/tls13-reference`, which exists for exactly this. A
+> **malicious-prover test** should land alongside, so this class of gap is detectable rather than
+> invisible.
 
-> Diagnosis (2026-08): the leader parses the coalesced 1.3 server flight fine (a separate one-line
-> coalescing bug in the validator was found and reverted); the blocker is that the **follower scans zero
-> records**. A clean leader↔follower record-relay + state machine is the fix, which is why a fresh backend
-> is the right call.
+The 1.3 path is **substantially working as plumbing** — see the warning above for why that is not the
+same as support. As of 2026-08-05:
+
+- **Passing** — 6 end-to-end MPC-TLS 1.3 notarizations against the in-repo rustls fixture
+  (`crates/tlsn/tests/tls13_matrix.rs`, 5 cases across RSA/ECDSA chains and none/optional/required
+  client auth, plus `test_tls13`). Each asserts the negotiated version is `V1_3` and runs the full
+  commit → connect → prove → verify flow.
+- **Passing against real servers** — nginx 1.27 (RSA and ECDSA), Apache httpd 2.4 and Caddy 2.10,
+  via `crates/tlsn/tests/interop/docker-compose.yml`. Four of the five interop cases pass.
+- **Fixed** — servers in middlebox-compatibility mode send a plaintext `change_cipher_spec` after
+  `ServerHello`. RFC 8446 section 5 requires a client to ignore it during the handshake, but
+  `push_incoming` fed every 1.3 record to `decrypt_record`, so opening a one-byte plaintext record
+  killed the connection right after `ServerHello`. This affected every Go `crypto/tls` server, Caddy
+  included.
+- **Fixed** — the decrypt epoch was applied too late. A 1.3 record's epoch is decided by handshake
+  progress: everything through the server's `Finished` uses handshake keys, everything after uses
+  application keys. The client signals the switch via `set_decrypt`, but only once it has *processed*
+  the `Finished`, whereas `push_incoming` decrypted **on arrival**. Any record sharing a read with
+  the `Finished` was therefore opened with a stale epoch. A server that coalesces its
+  `NewSessionTicket` into that batch — Go's `crypto/tls` does, so Caddy does — had the ticket opened
+  under handshake keys and failed the AEAD tag with `tls13 record authentication failed`.
+  Records are now queued raw and decrypted in `next_incoming`, under whichever epoch is current then.
+  This is worth understanding before touching the record path: decrypt-on-arrival is *structurally*
+  wrong for 1.3, and it happened to work only against servers that leave a gap after `Finished`.
+- **Open, OpenSSL `s_server`** — the only remaining interop failure, and the least representative
+  (a test utility, not a production server; nginx, Apache and Caddy cover the real web). The
+  handshake completes and the full response arrives — `EncryptedExtensions`, `Certificate`,
+  `CertificateVerify`, `Finished`, **two** post-handshake `NewSessionTicket` messages, the
+  application data, then `close_notify` — and the session then hangs rather than completing. The
+  epoch fix above did **not** resolve it, so it is a distinct bug, not a decryption failure: every
+  record decrypts and the stall is after all data has arrived. That is eight records against a
+  fixture configured with `max_recv_records_online(8)`, so record accounting around the two
+  post-handshake tickets is the first thing to check. A hang is the worst available failure mode and
+  should become a clean rejection whatever the cause.
+- **Caution on the interop suite** — the five `tls13_interop` cases `return` early unless
+  `TLSN_RUN_DOCKER_INTEROP=1` is set, and so pass in 0.00s having tested nothing. Treat a green run
+  without that variable as no evidence at all.
+
+What remains is therefore incremental hardening of the existing path, not a rewrite.
 
 ---
 

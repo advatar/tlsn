@@ -8347,6 +8347,7 @@ dependencies = [
  "generic-array",
  "ghash 0.5.1",
  "hmac",
+ "mpz-circuits",
  "mpz-common",
  "mpz-core",
  "mpz-fields",

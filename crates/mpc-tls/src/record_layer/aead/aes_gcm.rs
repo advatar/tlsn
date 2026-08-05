@@ -139,6 +139,94 @@ impl MpcAesGcm {
         Ok(())
     }
 
+    /// Applies a keystream to one TLS 1.3 record body, keeping the traffic keys
+    /// secret-shared.
+    ///
+    /// The 1.3 counterpart to [`MpcAesGcm::apply_keystream`]. That one draws from
+    /// the pooled keystream allocated in [`MpcAesGcm::alloc`] and assigns a public
+    /// explicit nonce; here the nonce is a secret reference (`iv XOR seq`), so the
+    /// keystream is allocated for this record alone and only the counters are
+    /// assigned.
+    ///
+    /// Returns `(input, output)`. The caller assigns the plaintext to `input` — the
+    /// leader only, since it is marked private — commits it, and decodes `output`.
+    /// Counters start at 2 because block 1 is reserved for J0, as in TLS 1.2.
+    #[allow(dead_code)]
+    pub(crate) fn apply_keystream_tls13(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        nonce: Nonce,
+        len: usize,
+    ) -> Result<(Vector<U8>, Vector<U8>), AeadError> {
+        let block_count = len.div_ceil(16);
+        let padded_len = block_count * 16;
+        let padding_len = padded_len - len;
+
+        let mut input = vm.alloc_vec::<U8>(padded_len)?;
+        match self.role {
+            Role::Leader => vm.mark_private(input)?,
+            Role::Follower => vm.mark_blind(input)?,
+        }
+
+        let keystream = self.aes.alloc_keystream_with_nonce(vm, padded_len, nonce)?;
+        let mut output = keystream.apply(vm, input)?;
+
+        let mut ctr = START_CTR..;
+        keystream.assign_counters(vm, move || {
+            ctr.next().expect("range is unbounded").to_be_bytes()
+        })?;
+
+        if padding_len > 0 {
+            let padding = input.split_off(input.len() - padding_len);
+            // As in the 1.2 path, the padding is not marked public, so only the
+            // prover assigns it.
+            if let Role::Leader = self.role {
+                vm.assign(padding, vec![0; padding_len])?;
+            }
+            vm.commit(padding)?;
+            output.truncate(len);
+        }
+
+        Ok((input, output))
+    }
+
+    /// Allocates one record's worth of TLS 1.3 material against a secret nonce.
+    ///
+    /// TLS 1.2 allocates everything up front in [`MpcAesGcm::alloc`]: one long
+    /// keystream, sliced per record, plus a pool of J0 blocks whose public nonces
+    /// are filled in as records arrive. TLS 1.3 cannot share a keystream that way,
+    /// because each record's nonce is a distinct secret value (`iv XOR seq`) and a
+    /// keystream is bound to one nonce reference. And its application keys only
+    /// exist once the handshake hash is set, after `alloc` has already run.
+    ///
+    /// So 1.3 allocates per record, at record time, once the length is known. That
+    /// trades away the preprocessing overlap 1.2 enjoys in exchange for keeping the
+    /// traffic keys secret-shared, which is the property that matters.
+    ///
+    /// Returns the keystream for the record body and the J0 block used for its tag.
+    #[allow(clippy::type_complexity)]
+    #[allow(dead_code)]
+    pub(crate) fn alloc_record_tls13(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        nonce: Nonce,
+        len: usize,
+    ) -> Result<
+        (
+            Keystream<Nonce, Ctr, Block>,
+            CtrBlock<Nonce, Ctr, Block>,
+            OneTimePadShared<[u8; 16]>,
+        ),
+        AeadError,
+    > {
+        let keystream = self.aes.alloc_keystream_with_nonce(vm, len, nonce)?;
+
+        let j0 = self.aes.alloc_ctr_block_with_nonce(vm, nonce)?;
+        let j0_shared = OneTimePadShared::<[u8; 16]>::new(self.role, j0.output, vm)?;
+
+        Ok((keystream, j0, j0_shared))
+    }
+
     pub(crate) async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), AeadError> {
         let State::Setup { ghash, .. } = &mut self.state else {
             return Err(AeadError::state("must be in setup state to preprocess"));
@@ -447,6 +535,24 @@ fn assign_j0(
     Ok(())
 }
 
+/// Assigns a J0 block's counter, leaving its nonce alone.
+///
+/// The TLS 1.3 counterpart to [`assign_j0`]. There the nonce is a public value
+/// read off the wire and assigned here; in TLS 1.3 it is `iv XOR seq`, computed
+/// inside the VM and already committed by whoever derived it, so assigning it
+/// again would double-commit. Only the counter — always 1 for J0, per NIST
+/// SP 800-38D — is set here.
+#[allow(dead_code)]
+fn assign_j0_counter(
+    vm: &mut dyn Vm<Binary>,
+    j0: CtrBlock<Nonce, Ctr, Block>,
+) -> Result<(), AeadError> {
+    vm.assign(j0.counter, 1u32.to_be_bytes())?;
+    vm.commit(j0.counter)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +676,92 @@ mod tests {
             assert_eq!(&msg_0, msg);
             assert_eq!(&msg_1, msg);
         }
+    }
+
+    /// Joint AES-GCM driven by a TLS 1.3 secret nonce must produce the same
+    /// ciphertext as a local AES-128-GCM using `nonce = iv XOR seq`.
+    ///
+    /// This is the property that lets the 1.3 record layer stop decoding the
+    /// traffic keys: the 12-byte IV stays a secret-shared VM reference, the nonce
+    /// is derived from it inside the VM, and neither party ever holds the key in
+    /// the clear — yet the output matches the reference cipher byte for byte.
+    #[rstest]
+    #[case::short_seq0(SHORT_MSG, 0)]
+    #[case::long_seq0(LONG_MSG, 0)]
+    #[case::long_seq5(LONG_MSG, 5)]
+    #[case::long_seq_high(LONG_MSG, 0x0102_0304_0506_0708)]
+    #[tokio::test]
+    async fn test_aes_gcm_tls13_secret_nonce(#[case] msg: &[u8], #[case] seq: u64) {
+        use crate::tls13::nonce::split_iv_and_derive_nonce;
+
+        let (mut ctx_0, mut ctx_1) = test_st_context(8);
+
+        let key = [42u8; 16];
+        let iv: [u8; 12] = [9u8; 12];
+
+        let mut vm_0 = IdealVm::new();
+        let mut vm_1 = IdealVm::new();
+
+        // Both parties hold the key and the full 12-byte IV as VM references.
+        // Marked public here only because IdealVm needs a concrete value; the
+        // point under test is that neither is ever decoded.
+        let mut setup = |vm: &mut IdealVm| {
+            let key_ref = vm.alloc::<Array<U8, 16>>().unwrap();
+            vm.mark_public(key_ref).unwrap();
+            vm.assign(key_ref, key).unwrap();
+            vm.commit(key_ref).unwrap();
+
+            let iv_ref = vm.alloc::<Array<U8, 12>>().unwrap();
+            vm.mark_public(iv_ref).unwrap();
+            vm.assign(iv_ref, iv).unwrap();
+            vm.commit(iv_ref).unwrap();
+
+            let (prefix, nonce) = split_iv_and_derive_nonce(vm, iv_ref, seq).unwrap();
+            (key_ref, prefix, nonce)
+        };
+
+        let (key_0, prefix_0, nonce_0) = setup(&mut vm_0);
+        let (key_1, prefix_1, nonce_1) = setup(&mut vm_1);
+
+        let mut rng = StdRng::seed_from_u64(0);
+        let (c_0, c_1) = ideal_share_convert(Block::random(&mut rng));
+        let mut leader = MpcAesGcm::new(c_0, Role::Leader);
+        let mut follower = MpcAesGcm::new(c_1, Role::Follower);
+
+        leader.set_key(key_0);
+        leader.set_iv(prefix_0);
+        follower.set_key(key_1);
+        follower.set_iv(prefix_1);
+
+        let (msg_0, ct_0) = leader
+            .apply_keystream_tls13(&mut vm_0, nonce_0, msg.len())
+            .unwrap();
+        let (msg_1, ct_1) = follower
+            .apply_keystream_tls13(&mut vm_1, nonce_1, msg.len())
+            .unwrap();
+
+        vm_0.assign(msg_0, msg.to_vec()).unwrap();
+        vm_0.commit(msg_0).unwrap();
+        vm_1.commit(msg_1).unwrap();
+
+        let ct_0 = vm_0.decode(ct_0).unwrap();
+        let ct_1 = vm_1.decode(ct_1).unwrap();
+
+        run_vms(&mut vm_0, &mut ctx_0, &mut vm_1, &mut ctx_1).await;
+
+        let ct_0 = ct_0.await.unwrap();
+        let ct_1 = ct_1.await.unwrap();
+
+        // The reference nonce, per RFC 8446 section 5.3.
+        let mut reference_nonce = iv;
+        for (n, s) in reference_nonce[4..].iter_mut().zip(seq.to_be_bytes()) {
+            *n ^= s;
+        }
+        let (want, _) = expected(&key, &reference_nonce[..4], &reference_nonce[4..], msg, &[]);
+
+        assert_eq!(ct_0, want, "leader ciphertext (seq={seq})");
+        assert_eq!(ct_1, want, "follower ciphertext (seq={seq})");
+        assert_ne!(ct_0, msg, "the keystream must actually have been applied");
     }
 
     fn create_vm(key: [u8; 16], iv: [u8; 4]) -> ((impl Vm<Binary>, Vars), (impl Vm<Binary>, Vars)) {

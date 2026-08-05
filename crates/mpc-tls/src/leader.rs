@@ -73,7 +73,8 @@ pub struct MpcTlsLeader {
     is_decrypting: bool,
     tls13_encrypt_epoch: Option<Epoch>,
     tls13_decrypt_epoch: Option<Epoch>,
-    tls13_incoming: VecDeque<PlainMessage>,
+    /// TLS 1.3 records awaiting decryption; see `push_incoming`.
+    tls13_pending: VecDeque<OpaqueMessage>,
     tls13_outgoing: VecDeque<OpaqueMessage>,
     tls13_sent_records: Vec<Record>,
     tls13_recv_records: Vec<Record>,
@@ -140,7 +141,7 @@ impl MpcTlsLeader {
             is_decrypting,
             tls13_encrypt_epoch: None,
             tls13_decrypt_epoch: None,
-            tls13_incoming: VecDeque::new(),
+            tls13_pending: VecDeque::new(),
             tls13_outgoing: VecDeque::new(),
             tls13_sent_records: Vec::new(),
             tls13_recv_records: Vec::new(),
@@ -1150,31 +1151,46 @@ impl Backend for MpcTlsLeader {
 
     #[instrument(level = "debug", skip_all, err)]
     async fn push_incoming(&mut self, msg: OpaqueMessage) -> Result<(), BackendError> {
-        match &mut self.state {
+        // A TLS 1.3 server in middlebox-compatibility mode sends a plaintext
+        // `change_cipher_spec` after its `ServerHello`. RFC 8446 section 5 says a
+        // client MUST ignore such records while the handshake is in progress, and
+        // they are not part of the handshake transcript. Go's crypto/tls always
+        // sends one (so Caddy does); feeding it to `decrypt_record` below would
+        // try to AEAD-open a one-byte plaintext record and kill the connection
+        // immediately after `ServerHello`.
+        if msg.typ == ContentType::ChangeCipherSpec {
+            if let State::Handshake {
+                protocol_version: Some(ProtocolVersion::TLSv1_3),
+                ..
+            } = &self.state
+            {
+                debug!("ignoring middlebox-compatibility change_cipher_spec");
+                return Ok(());
+            }
+        }
+
+        match &self.state {
             State::Handshake {
-                ctx,
-                tls13,
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             }
             | State::Active {
-                ctx,
-                tls13,
                 protocol_version: ProtocolVersion::TLSv1_3,
                 ..
             } => {
-                let epoch = self.tls13_decrypt_epoch.ok_or_else(|| {
-                    MpcTlsError::hs("tls13 decrypt epoch was not configured before decryption")
-                })?;
-                let (plain, record) = tls13.decrypt_record(epoch, msg).map_err(MpcTlsError::hs)?;
-                ctx.io_mut()
-                    .send(Message::Tls13RecvRecord(Tls13RecordMessage {
-                        record: record.clone(),
-                    }))
-                    .await
-                    .map_err(MpcTlsError::from)?;
-                self.tls13_recv_records.push(record);
-                self.tls13_incoming.push_back(plain);
+                // Queue the record and decrypt it in `next_incoming` instead of here.
+                //
+                // The epoch a 1.3 record belongs to is decided by handshake progress:
+                // everything up to the server's Finished uses handshake keys, and
+                // everything after it uses application keys. The client tells us which
+                // via `set_decrypt`, but it can only do so once it has *processed* the
+                // Finished. Decrypting on arrival therefore uses a stale epoch for any
+                // record that shares a read with the Finished — a server that coalesces
+                // its NewSessionTicket into that batch (Go's crypto/tls does, so Caddy
+                // does) has the ticket opened with handshake keys and the AEAD tag
+                // fails. Deferring means the epoch is whatever the client has most
+                // recently set, which is the one the record was encrypted under.
+                self.tls13_pending.push_back(msg);
                 return Ok(());
             }
             _ => {}
@@ -1240,14 +1256,47 @@ impl Backend for MpcTlsLeader {
 
     #[instrument(level = "debug", skip_all, err)]
     async fn next_incoming(&mut self) -> Result<Option<PlainMessage>, BackendError> {
-        if let Some(record) = self.tls13_incoming.pop_front() {
+        // Decrypt one queued TLS 1.3 record, using the epoch as it stands now. See
+        // `push_incoming` for why this cannot happen on arrival.
+        if let Some(msg) = self.tls13_pending.pop_front() {
+            let epoch = self.tls13_decrypt_epoch.ok_or_else(|| {
+                MpcTlsError::hs("tls13 decrypt epoch was not configured before decryption")
+            })?;
+
+            let (plain, record) = match &mut self.state {
+                State::Handshake { tls13, .. } | State::Active { tls13, .. } => {
+                    tls13.decrypt_record(epoch, msg).map_err(MpcTlsError::hs)?
+                }
+                _ => {
+                    return Err(MpcTlsError::state(format!(
+                        "can not decrypt tls13 record in state: {}",
+                        self.state
+                    ))
+                    .into())
+                }
+            };
+
+            let ctx = match &mut self.state {
+                State::Handshake { ctx, .. } | State::Active { ctx, .. } => ctx,
+                _ => unreachable!("state was matched above"),
+            };
+            ctx.io_mut()
+                .send(Message::Tls13RecvRecord(Tls13RecordMessage {
+                    record: record.clone(),
+                }))
+                .await
+                .map_err(MpcTlsError::from)?;
+
+            self.tls13_recv_records.push(record);
+
             debug!(
-                "processing incoming message, type: {:?}, len: {}",
-                record.typ,
-                record.payload.0.len()
+                "processing incoming message, type: {:?}, len: {}, epoch: {:?}",
+                plain.typ,
+                plain.payload.0.len(),
+                epoch
             );
 
-            return Ok(Some(record));
+            return Ok(Some(plain));
         }
 
         let record_layer = match &mut self.state {
@@ -1516,7 +1565,7 @@ impl Backend for MpcTlsLeader {
             _ => true,
         };
 
-        Ok(record_layer_empty && self.tls13_incoming.is_empty() && self.tls13_outgoing.is_empty())
+        Ok(record_layer_empty && self.tls13_pending.is_empty() && self.tls13_outgoing.is_empty())
     }
 
     async fn server_closed(&mut self) -> Result<(), BackendError> {

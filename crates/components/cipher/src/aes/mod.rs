@@ -138,6 +138,63 @@ impl Cipher for Aes128 {
         })
     }
 
+    fn alloc_ctr_block_with_nonce(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        nonce: Self::Nonce,
+    ) -> Result<CtrBlock<Self::Nonce, Self::Counter, Self::Block>, Self::Error> {
+        self.key
+            .ok_or_else(|| AesError::new(ErrorKind::Key, "key not set"))?;
+        let iv = self
+            .iv
+            .ok_or_else(|| AesError::new(ErrorKind::Iv, "iv not set"))?;
+
+        // The nonce is supplied by the caller and deliberately not marked public;
+        // its privacy is whatever the caller established when computing it.
+        let counter: Array<U8, 4> = vm
+            .alloc()
+            .map_err(|err| AesError::new(ErrorKind::Vm, err))?;
+        vm.mark_public(counter)
+            .map_err(|err| AesError::new(ErrorKind::Vm, err))?;
+
+        if self.key_schedule.is_none() {
+            self.key_schedule = Some(self.alloc_key_schedule(vm)?);
+        }
+        let ks = *self.key_schedule.as_ref().expect("key schedule was set");
+
+        let output = vm
+            .call(
+                Call::builder(AES128_POST_KS.clone())
+                    .arg(ks)
+                    .arg(iv)
+                    .arg(nonce)
+                    .arg(counter)
+                    .build()
+                    .expect("call should be valid"),
+            )
+            .map_err(|err| AesError::new(ErrorKind::Vm, err))?;
+
+        Ok(CtrBlock {
+            explicit_nonce: nonce,
+            counter,
+            output,
+        })
+    }
+
+    fn alloc_keystream_with_nonce(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        len: usize,
+        nonce: Self::Nonce,
+    ) -> Result<Keystream<Self::Nonce, Self::Counter, Self::Block>, Self::Error> {
+        let block_count = len.div_ceil(16);
+        let blocks = (0..block_count)
+            .map(|_| self.alloc_ctr_block_with_nonce(vm, nonce))
+            .collect::<Result<Vec<_>, AesError>>()?;
+
+        Ok(Keystream::new(&blocks))
+    }
+
     fn alloc_keystream(
         &mut self,
         vm: &mut dyn Vm<Binary>,
@@ -212,6 +269,84 @@ mod tests {
         Array, MemoryExt, Vector, ViewExt,
     };
     use mpz_vm_core::{Execute, Vm};
+
+    /// A keystream built over a caller-supplied nonce must equal one built over
+    /// the same nonce allocated internally. This is what lets the TLS 1.3 record
+    /// layer reuse this cipher with a secret nonce (`iv XOR seq`) instead of the
+    /// public explicit nonce TLS 1.2 reads off the wire.
+    #[tokio::test]
+    async fn test_aes_ctr_with_caller_supplied_nonce_matches() {
+        let key = [42_u8; 16];
+        let iv = [3_u8; 4];
+        let nonce = [5_u8; 8];
+        let start_counter = 3u32;
+        let msg = vec![7u8; 64];
+
+        let (mut ctx_a, mut ctx_b) = test_st_context(8);
+        let mut gen = IdealVm::new();
+        let mut ev = IdealVm::new();
+
+        let mut aes_gen = setup_ctr(key, iv, &mut gen);
+        let mut aes_ev = setup_ctr(key, iv, &mut ev);
+
+        // gen: the existing path, nonce allocated internally and marked public.
+        let ks_gen = aes_gen.alloc_keystream(&mut gen, msg.len()).unwrap();
+
+        // ev: the new path, nonce supplied by the caller.
+        let nonce_ref: Array<U8, 8> = ev.alloc().unwrap();
+        ev.mark_public(nonce_ref).unwrap();
+        ev.assign(nonce_ref, nonce).unwrap();
+        ev.commit(nonce_ref).unwrap();
+        let ks_ev = aes_ev
+            .alloc_keystream_with_nonce(&mut ev, msg.len(), nonce_ref)
+            .unwrap();
+
+        let msg_gen: Vector<U8> = gen.alloc_vec(msg.len()).unwrap();
+        gen.mark_public(msg_gen).unwrap();
+        gen.assign(msg_gen, msg.clone()).unwrap();
+        gen.commit(msg_gen).unwrap();
+
+        let msg_ev: Vector<U8> = ev.alloc_vec(msg.len()).unwrap();
+        ev.mark_public(msg_ev).unwrap();
+        ev.assign(msg_ev, msg.clone()).unwrap();
+        ev.commit(msg_ev).unwrap();
+
+        let mut ctr = start_counter..;
+        ks_gen
+            .assign(&mut gen, nonce, move || ctr.next().unwrap().to_be_bytes())
+            .unwrap();
+        let mut ctr = start_counter..;
+        ks_ev
+            .assign_counters(&mut ev, move || ctr.next().unwrap().to_be_bytes())
+            .unwrap();
+
+        let out_gen = ks_gen.apply(&mut gen, msg_gen).unwrap();
+        let out_ev = ks_ev.apply(&mut ev, msg_ev).unwrap();
+
+        let (ct_gen, ct_ev) = tokio::try_join!(
+            async {
+                let out = gen.decode(out_gen).unwrap();
+                gen.flush(&mut ctx_a).await.unwrap();
+                gen.execute(&mut ctx_a).await.unwrap();
+                gen.flush(&mut ctx_a).await.unwrap();
+                out.await
+            },
+            async {
+                let out = ev.decode(out_ev).unwrap();
+                ev.flush(&mut ctx_b).await.unwrap();
+                ev.execute(&mut ctx_b).await.unwrap();
+                ev.flush(&mut ctx_b).await.unwrap();
+                out.await
+            }
+        )
+        .unwrap();
+
+        assert_eq!(
+            ct_gen, ct_ev,
+            "a caller-supplied nonce must produce the same keystream"
+        );
+        assert_ne!(ct_gen, msg, "the keystream must actually have been applied");
+    }
 
     #[tokio::test]
     async fn test_aes_ctr() {

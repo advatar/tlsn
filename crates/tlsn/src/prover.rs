@@ -38,7 +38,7 @@ use tlsn_core::{
     connection::{HandshakeData, ServerName},
     transcript::{TlsTranscript, Transcript},
 };
-use tracing::{Span, debug, info_span, instrument};
+use tracing::{Span, debug, info_span, instrument, warn};
 use webpki::anchor_from_trusted_cert;
 
 const BUF_CAP: usize = 16 * 1024 * 1024;
@@ -197,11 +197,26 @@ impl Prover<state::CommitAccepted> {
 
         // Which versions to offer decides which MPC-TLS path the session takes, because a dual-stack
         // server negotiates the best it is offered. Only TLS 1.2 completes end to end in this fork,
-        // so that stays the default; offering 1.3 is opt-in and selects an incomplete path.
+        // so that stays the default.
+        //
+        // The 1.3 variants are named `Unsafe` deliberately: that path decodes the application
+        // traffic keys to plaintext, so the prover can forge server responses and the session proves
+        // nothing about provenance. Warn loudly rather than let a caller reach it silently.
         let versions: &[&tls_client::SupportedProtocolVersion] = match config.offered_versions() {
             OfferedVersions::Tls12Only => &[&tls_client::version::TLS12],
-            OfferedVersions::Tls13Only => &[&tls_client::version::TLS13],
-            OfferedVersions::Tls12AndTls13 => {
+            OfferedVersions::Tls13Unsafe => {
+                warn!(
+                    "offering TLS 1.3: the MPC-TLS 1.3 path reveals the application traffic keys to \
+                     the prover, so the resulting session provides NO provenance guarantee and must \
+                     not be relied on"
+                );
+                &[&tls_client::version::TLS13]
+            }
+            OfferedVersions::Tls12AndTls13Unsafe => {
+                warn!(
+                    "offering TLS 1.2 and 1.3: if the server negotiates 1.3, the resulting session \
+                     provides NO provenance guarantee and must not be relied on"
+                );
                 &[&tls_client::version::TLS12, &tls_client::version::TLS13]
             }
         };

@@ -20,6 +20,8 @@ fn caddy_enabled() -> bool {
 }
 
 async fn run_docker_case(port: u16, roots: Vec<CertificateDer>) {
+    let _ = tracing_subscriber::fmt::try_init();
+
     let mut last_err = None;
     let mut socket = None;
 
