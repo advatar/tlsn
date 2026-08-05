@@ -82,7 +82,38 @@ ones I would make:
 > Lesson for anyone extending this document: confirming that a symbol *exists* in two files is not
 > the same as confirming the logic between them is missing. Run the tests.
 
-The 1.3 path is **substantially working**, not a stub. As of 2026-08-05:
+> ## ⚠ The 1.3 path has no security guarantee. Do not present it as supported.
+>
+> **The prover learns the TLS 1.3 application traffic keys in the clear.** In
+> `crates/mpc-tls/src/tls13.rs`, `set_handshake_hash` calls `vm.decode(..)` on all four application
+> keys (`client_write_key`, `client_iv`, `server_write_key`, `server_iv`) and executes, storing the
+> results in a field named `clear_application`. `decrypt_tls13_record` then uses a **plain
+> `Aes128Gcm`** with those keys. A `decode` reveals a value to *both* parties.
+>
+> This voids provenance. A prover holding `server_write_key` can encrypt arbitrary bytes under the
+> server's key and present them as the server's response, which is the exact attack the protocol
+> exists to prevent. It directly contradicts the invariant stated in section 3 of this document:
+> *neither prover nor verifier ever holds the complete server application traffic key*.
+>
+> The contrast with the working path makes the gap unambiguous:
+>
+> | | TLS 1.2 | TLS 1.3 |
+> |---|---|---|
+> | Application keys | stay VM references (`Array<U8, 16>`), passed to `record_layer.set_keys` | `vm.decode(..)` → plaintext `[u8; 16]` |
+> | AEAD | joint, in MPC | local `Aes128Gcm` in the leader |
+>
+> And `crates/components/hmac-sha256/src/tls13.rs` uses `mask_private` / `mask_blind` exactly where
+> only the leader should learn a value (the handshake secrets), so the distinction between masking and
+> decoding was understood — the plain decode of the *application* keys is the gap, not an idiom.
+>
+> **The passing tests cannot detect this.** They verify plumbing against honest servers; nothing
+> exercises a malicious prover. A green matrix here means records flow, not that the guarantee holds.
+> Closing this is the TLS 1.3 record layer of M2 — joint AEAD over secret-shared traffic keys — and it
+> is a substantial piece of work, not a bug fix. Until then, offering 1.3 should be treated as
+> explicitly experimental and unsafe.
+
+The 1.3 path is **substantially working as plumbing** — see the warning above for why that is not the
+same as support. As of 2026-08-05:
 
 - **Passing** — 6 end-to-end MPC-TLS 1.3 notarizations against the in-repo rustls fixture
   (`crates/tlsn/tests/tls13_matrix.rs`, 5 cases across RSA/ECDSA chains and none/optional/required
