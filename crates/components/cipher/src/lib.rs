@@ -79,6 +79,42 @@ pub trait Cipher {
         vm: &mut dyn Vm<Binary>,
         len: usize,
     ) -> Result<Keystream<Self::Nonce, Self::Counter, Self::Block>, Self::Error>;
+
+    /// Allocates a single block in counter mode over a **caller-supplied**
+    /// nonce reference.
+    ///
+    /// [`Cipher::alloc_ctr_block`] allocates the nonce itself and marks it
+    /// public, which suits TLS 1.2 where the nonce travels on the wire. TLS 1.3
+    /// has no explicit nonce: it is `iv XOR sequence_number`, and since the IV is
+    /// secret-shared the nonce is secret too. This variant lets the caller pass a
+    /// reference it has already computed inside the VM, so the value's privacy is
+    /// the caller's choice rather than fixed to public.
+    #[allow(clippy::type_complexity)]
+    fn alloc_ctr_block_with_nonce(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        nonce: Self::Nonce,
+    ) -> Result<CtrBlock<Self::Nonce, Self::Counter, Self::Block>, Self::Error>;
+
+    /// Allocates a keystream in counter mode over a **caller-supplied** nonce
+    /// reference.
+    ///
+    /// See [`Cipher::alloc_ctr_block_with_nonce`] for why this exists. The same
+    /// nonce reference is used for every block; only the counter varies, exactly
+    /// as in [`Cipher::alloc_keystream`].
+    ///
+    /// # Arguments
+    ///
+    /// * `vm` - Virtual machine to allocate into.
+    /// * `len` - Length of the stream in bytes.
+    /// * `nonce` - Nonce reference, already computed in the VM.
+    #[allow(clippy::type_complexity)]
+    fn alloc_keystream_with_nonce(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        len: usize,
+        nonce: Self::Nonce,
+    ) -> Result<Keystream<Self::Nonce, Self::Counter, Self::Block>, Self::Error>;
 }
 
 /// A block in counter mode.
@@ -227,6 +263,28 @@ where
             vm.assign(block.explicit_nonce, explicit_nonce)
                 .map_err(CipherError::new)?;
             vm.commit(block.explicit_nonce).map_err(CipherError::new)?;
+            vm.assign(block.counter, ctr()).map_err(CipherError::new)?;
+            vm.commit(block.counter).map_err(CipherError::new)?;
+        }
+
+        Ok(())
+    }
+
+    /// Assigns the counters only, leaving the nonce to the caller.
+    ///
+    /// The companion to [`Cipher::alloc_keystream_with_nonce`]. There the nonce
+    /// reference is supplied — and committed — by the caller, typically because it
+    /// was computed inside the VM rather than being a public constant, so
+    /// [`Keystream::assign`] cannot assign it and would double-commit it.
+    pub fn assign_counters(
+        &self,
+        vm: &mut dyn Vm<Binary>,
+        mut ctr: impl FnMut() -> C::Clear,
+    ) -> Result<(), CipherError>
+    where
+        C::Clear: Copy,
+    {
+        for block in &self.blocks {
             vm.assign(block.counter, ctr()).map_err(CipherError::new)?;
             vm.commit(block.counter).map_err(CipherError::new)?;
         }
