@@ -8,7 +8,6 @@ use tokio::io::duplex;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore]
 async fn test_tls13() {
     let _ = tracing_subscriber::fmt::try_init();
 
