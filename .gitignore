@@ -29,3 +29,7 @@ target/
 
 # metrics
 *.csv
+
+# Xcode / SwiftPM local package data
+.swiftpm/
+**/.swiftpm/
