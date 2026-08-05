@@ -8,9 +8,21 @@ description = "Portable signed verifier artifacts for TLSNotary"
 [lints]
 workspace = true
 
+[features]
+# Notary-side hybrid ML-DSA-65 signing. Off by default so verify-only consumers (the mobile prover)
+# never compile the post-quantum backend; only the notary gateway enables it.
+pq-sign = ["dep:libcrux-ml-dsa"]
+
 [dependencies]
 base64 = { workspace = true }
 p256 = { workspace = true, features = ["ecdsa"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Pinned to the exact version VCIssuer verifies with, so hybrid signatures interoperate byte-for-byte.
+libcrux-ml-dsa = { version = "0.0.10", default-features = false, features = ["mldsa65", "std"], optional = true }
+
+# Offline hybrid-artifact verifier; only builds when the post-quantum backend is available.
+[[example]]
+name = "verify_hybrid"
+required-features = ["pq-sign"]

@@ -19,7 +19,7 @@ use axum::{
 use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tlsn_notary_artifact::{ArtifactSigner, SignedArtifact};
+use tlsn_notary_artifact::{ArtifactSigner, SignedArtifact, attach_pq_signature};
 use tlsn_sdk_core::{SdkVerifier, VerifierConfig, VerifierOutput};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -45,6 +45,8 @@ pub struct AppConfig {
     pub destination_policy: DestinationPolicy,
     pub verifier_config: VerifierConfig,
     pub artifact_signer: ArtifactSigner,
+    /// Optional ML-DSA-65 `(secret, public)` keypair enabling hybrid post-quantum attestations.
+    pub pq_keypair: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl AppConfig {
@@ -67,6 +69,9 @@ pub struct HealthResponse {
     pub allow_loopback: bool,
     pub allow_private_ips: bool,
     pub artifact_public_key: String,
+    /// Raw ML-DSA-65 notary public key (base64url, no padding) when hybrid signing is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pq_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +81,7 @@ struct AppState {
     verifier_config: VerifierConfig,
     health: HealthResponse,
     artifact_signer: ArtifactSigner,
+    pq_keypair: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -291,6 +297,10 @@ pub fn app(config: AppConfig) -> Router {
         allow_private_ips: config.destination_policy.allow_private_ips,
         artifact_public_key: base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(config.artifact_signer.public_key()),
+        pq_public_key: config
+            .pq_keypair
+            .as_ref()
+            .map(|(_, public)| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(public)),
     };
 
     let state = AppState {
@@ -299,6 +309,7 @@ pub fn app(config: AppConfig) -> Router {
         verifier_config: config.verifier_config,
         health,
         artifact_signer: config.artifact_signer,
+        pq_keypair: config.pq_keypair,
     };
 
     let static_index = config.static_dir.join("index.html");
@@ -400,10 +411,14 @@ async fn run_notary_session(state: AppState, session_id: String, socket: WebSock
                 .duration_since(std::time::UNIX_EPOCH)
                 .context("system clock is before Unix epoch")?
                 .as_secs();
-            let artifact = state
+            let mut artifact = state
                 .artifact_signer
                 .sign(&session_id, issued_at, output)
                 .context("failed to sign portable artifact")?;
+            if let Some((pq_secret, pq_public)) = state.pq_keypair.as_ref() {
+                attach_pq_signature(&mut artifact, pq_secret, pq_public)
+                    .context("failed to attach post-quantum signature")?;
+            }
             state.sessions.complete(&session_id, artifact).await;
             Ok(())
         }

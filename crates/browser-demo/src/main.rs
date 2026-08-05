@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, net::SocketAddr, path::PathBuf};
 
 use anyhow::Result;
+use base64::Engine as _;
 use clap::Parser;
 use tlsn_browser_demo::{AppConfig, DestinationPolicy, app};
 use tlsn_notary_artifact::ArtifactSigner;
@@ -33,6 +34,10 @@ struct Cli {
     /// Persistent 32-byte P-256 secret scalar encoded as 64 hex characters.
     #[arg(long, env = "TLSN_NOTARY_SIGNING_KEY")]
     artifact_signing_key: Option<String>,
+    /// Optional 32-byte seed (64 hex chars) that deterministically derives the ML-DSA-65 keypair.
+    /// When set, artifacts carry a hybrid post-quantum signature alongside ES256.
+    #[arg(long, env = "TLSN_NOTARY_PQ_SEED")]
+    pq_signing_seed: Option<String>,
 }
 
 #[tokio::main]
@@ -54,6 +59,28 @@ async fn main() -> Result<()> {
         }
     };
 
+    let pq_keypair = match cli.pq_signing_seed {
+        Some(value) => {
+            let bytes = hex::decode(value.trim())?;
+            let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+                anyhow::anyhow!("TLSN_NOTARY_PQ_SEED must be exactly 32 bytes (64 hex chars)")
+            })?;
+            let (secret, public) = tlsn_notary_artifact::generate_pq_keypair(&seed);
+            info!(
+                "hybrid post-quantum signing enabled (ML-DSA-65); pq public key hex={} base64url={}",
+                hex::encode(&public),
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&public),
+            );
+            Some((secret, public))
+        }
+        None => {
+            tracing::warn!(
+                "post-quantum signing disabled; set TLSN_NOTARY_PQ_SEED to emit hybrid attestations"
+            );
+            None
+        }
+    };
+
     let config = AppConfig {
         static_dir: cli.static_dir.unwrap_or_else(AppConfig::default_static_dir),
         wasm_pkg_dir: cli
@@ -70,6 +97,7 @@ async fn main() -> Result<()> {
             .max_recv_data(cli.verifier_max_recv_data)
             .build(),
         artifact_signer,
+        pq_keypair,
     };
 
     let listener = TcpListener::bind(cli.listen).await?;
