@@ -108,9 +108,33 @@ ones I would make:
 >
 > **The passing tests cannot detect this.** They verify plumbing against honest servers; nothing
 > exercises a malicious prover. A green matrix here means records flow, not that the guarantee holds.
-> Closing this is the TLS 1.3 record layer of M2 — joint AEAD over secret-shared traffic keys — and it
-> is a substantial piece of work, not a bug fix. Until then, offering 1.3 should be treated as
-> explicitly experimental and unsafe.
+> Until this is closed, offering 1.3 is explicitly unsafe — hence
+> [`OfferedVersions::Tls13Unsafe`] and the runtime warning the prover emits.
+>
+> ### Closing it looks tractable — likely rewiring, not new cryptography
+>
+> A first estimate called this "substantial architectural work". That was too pessimistic. The
+> existing TLS 1.2 joint AEAD appears reusable almost as-is:
+>
+> - **The nonce maps exactly onto the existing interface.** A 1.3 nonce is `iv XOR seq`, with the
+>   64-bit sequence number XORed into the **last 8 bytes**. So the leading 4 bytes are constant for
+>   the connection and only the trailing 8 vary — which is precisely `MpcAesGcm`'s existing
+>   `set_iv(Array<U8, 4>)` plus `Nonce = Array<U8, 8>` split. For 1.3 the "explicit nonce" is a
+>   computed value rather than one read off the wire. No new circuits.
+> - **The AAD is already parameterized.** `record_layer.rs` passes `aad: Vec<u8>`, built by
+>   `make_tls12_aad`; `make_tls13_aad` already exists in `crates/mpc-tls/src/tls13.rs`. Swap the
+>   constructor.
+> - **Inner plaintext** (content type plus zero padding) is framing rather than cryptography, and the
+>   reference oracle already implements and tests it.
+>
+> One feasibility question remains open, and it needs the `mpz` sources rather than this checkout:
+> whether a VM `Array<U8, 12>` can be split into `[0..4]` and `[4..12]` sub-references. If it cannot,
+> the alternative is to have `Tls13KeySched` emit the IV as two arrays directly — it derives them via
+> HKDF inside the VM, so producing 4+8 halves is a local change.
+>
+> Correctness is checkable against `crates/tls/tls13-reference`, which exists for exactly this. A
+> **malicious-prover test** should land alongside, so this class of gap is detectable rather than
+> invisible.
 
 The 1.3 path is **substantially working as plumbing** — see the warning above for why that is not the
 same as support. As of 2026-08-05:
