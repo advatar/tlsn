@@ -6,7 +6,8 @@ publish = false
 
 [dependencies]
 tlsn-sdk-core = { workspace = true }
-tlsn-notary-artifact = { workspace = true }
+# `pq-sign` pulls in the ML-DSA-65 backend so this notary gateway can emit hybrid attestations.
+tlsn-notary-artifact = { workspace = true, features = ["pq-sign"] }
 
 anyhow = { workspace = true }
 base64 = { workspace = true }

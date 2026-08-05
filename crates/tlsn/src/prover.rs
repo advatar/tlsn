@@ -195,8 +195,15 @@ impl Prover<state::CommitAccepted> {
                 .collect::<Result<Vec<_>, _>>()?,
         };
 
+        // Pin the offered TLS version to 1.2. This fork's MPC-TLS notary/verifier only completes for
+        // TLS 1.2: the TLS 1.3 verifier path is incomplete (the follower never receives the handshake
+        // records, so it can never observe the server Finished). Offering only 1.2 makes dual-stack
+        // servers (e.g. example.com) negotiate the protocol TLSNotary actually supports.
         let rustls_config = tls_client::ClientConfig::builder()
-            .with_safe_defaults()
+            .with_safe_default_cipher_suites()
+            .with_safe_default_kx_groups()
+            .with_protocol_versions(&[&tls_client::version::TLS12])
+            .expect("TLS 1.2 is a supported protocol version")
             .with_root_certificates(root_store);
 
         let rustls_config = if let Some((cert, key)) = config.client_auth() {
