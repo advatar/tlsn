@@ -1,6 +1,6 @@
 # TLS 1.3 MPC-TLS backend — assessment & research plan
 
-**Status:** research task, not yet started · **Audience:** MPC-TLS engineer picking this up
+**Status:** M1 delivered · M2 next · **Audience:** MPC-TLS engineer picking this up
 **Companion:** [`tls13-mpc-tls-backend.proposal.md`](./tls13-mpc-tls-backend.proposal.md) — the original design brief.
 
 ---
@@ -125,16 +125,39 @@ HKDF/HMAC over secret material, and AEAD; everything else is ordinary Rust with 
 
 Adapted from the brief's M1–M6, pointed at real modules.
 
-1. **M1 — non-MPC 1.3 reference engine (the oracle).** A deterministic single-party 1.3 client for the
-   narrow profile (X25519, `TLS_AES_128_GCM_SHA256`, HTTP/1.1) with RFC 8446 test-vector coverage and
-   key-schedule / transcript tracing. Lives alongside `crates/tls/client`. Everything MPC is later tested
-   against this.
+1. **M1 — non-MPC 1.3 reference engine (the oracle). ✅ Delivered:
+   [`crates/tls/tls13-reference`](../../crates/tls/tls13-reference).** Single-party key schedule,
+   transcript, traffic keys, `Finished` and record layer for the narrow profile, with per-step tracing.
+   43 tests, validated on two independent vector sets:
+   - the full **RFC 8448 §3** handshake trace — key schedule, traffic keys, both `Finished` MACs, and
+     every protected record decrypted *and* re-encrypted byte-for-byte. Vectors are **generated** from
+     the RFC text by `tools/gen_rfc8448_vectors.py`, not transcribed, and every field is length-checked
+     against the `(N octets)` count the RFC prints beside it;
+   - **`draft-ietf-tls-tls13-vectors-06`** — the same fixtures `crates/components/hmac-sha256`'s MPC key
+     schedule already passes, so oracle and MPC are confirmed to agree on inputs neither derived from the
+     other.
+
+   Two deliberate choices worth knowing before building on it. `info` (the serialized `HkdfLabel`) is
+   asserted alongside every output, so a label-encoding bug — the most common TLS 1.3 key-schedule error,
+   and exactly what MPC's `make_hkdf_label` must match — is localised rather than surfacing as a wrong
+   key. And transcript hashes are **recomputed from the handshake messages** in the trace rather than
+   read from the RFC's `hash` fields, so the *transcript positions* are pinned too, not just the
+   arithmetic.
+
+   Scope note: this is the key schedule and record layer, not a networked client. It takes the ECDHE
+   shared secret as an input — the same value MPC holds secret-shared as `pms`, which is the right
+   oracle/MPC boundary — and deliberately does **not** implement X25519 (see M3). Certificate validation
+   and socket handling are absent by design; `crates/tls/client` already has those.
 2. **M2 — MPC key schedule + record layer.** `MpcHkdf`, `MpcHmac`, AEAD, sequence-derived nonces,
    authenticated-release semantics — on `mpz-garble`/`mpz-circuits`/`mpz-share-conversion`, validated on
    RFC vectors with fixed secrets before ECDHE.
 3. **M3 — distributed X25519 (the crux).** Shared client-scalar generation + shared-secret compute on
    `mpz-fields` + `mpz-ole`. Tests: neither party alone derives `Z`; valid public key; low-order/invalid
    point rejection; matches a reference X25519; aborts leak no reusable scalar share.
+   A known-answer test is ready: the RFC 8448 client and server X25519 key pairs are retained as
+   `CLIENT_X25519` / `SERVER_X25519` in M1's generated vectors, and their shared secret is the
+   `HANDSHAKE_EXTRACT.ikm` the oracle already consumes. Note X25519 is **not** in the workspace dependency
+   set today, so M3 adds it.
 4. **M4 — full handshake** in `crates/mpc-tls` (new `tls13/`): ClientHello/ServerHello, encrypted server
    flight with authenticated release, X.509 + `CertificateVerify` + `Finished`, transition to app keys.
    Retire `crates/mpc-tls/src/tls13.rs`; make `crates/tlsn/tests/tls13_{matrix,interop}.rs` pass for real.
@@ -177,9 +200,16 @@ develop in the open and potentially contribute upstream, rather than living only
 
 ## 7. TL;DR for the picker-upper
 
-Start at **M1** (reference engine as an oracle) → **M2** (MPC key schedule/record on the existing `mpz`
-toolbox) → **M3** (distributed X25519 — the crux). Replace `crates/mpc-tls/src/tls13.rs` with a clean
-typestate machine; add a **version-specific** 1.3 proof next to `crates/notary-artifact` rather than
-overloading the 1.2 one; keep the shipped 1.2 path working throughout. The design brief in the companion
-file is sound on architecture; treat its crate/primitive names as illustrative and map them to the table
-in §3.
+**M1 is done** — [`crates/tls/tls13-reference`](../../crates/tls/tls13-reference) is the oracle; read its
+README first, it documents how to diff MPC output against it and what `trace().render()` gives you.
+
+Next is **M2** (MPC key schedule/record on the existing `mpz` toolbox), then **M3** (distributed X25519 —
+the crux). M2 is now a comparison task rather than an interpretation task: the oracle's `HandshakeKeys` /
+`ApplicationKeys` mirror the `tlsn_hmac_sha256` field names, and `mpc_parity.rs` already shows the two
+implementations agreeing on the existing fixtures, so new MPC work can be asserted directly against the
+oracle instead of against hand-copied vectors.
+
+Beyond that: replace `crates/mpc-tls/src/tls13.rs` with a clean typestate machine; add a
+**version-specific** 1.3 proof next to `crates/notary-artifact` rather than overloading the 1.2 one; keep
+the shipped 1.2 path working throughout. The design brief in the companion file is sound on architecture;
+treat its crate/primitive names as illustrative and map them to the table in §3.
