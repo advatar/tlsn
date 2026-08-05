@@ -88,25 +88,33 @@ The 1.3 path is **substantially working**, not a stub. As of 2026-08-05:
   (`crates/tlsn/tests/tls13_matrix.rs`, 5 cases across RSA/ECDSA chains and none/optional/required
   client auth, plus `test_tls13`). Each asserts the negotiated version is `V1_3` and runs the full
   commit → connect → prove → verify flow.
-- **Passing against real servers** — nginx 1.27 (RSA and ECDSA) and Apache httpd 2.4, via
-  `crates/tlsn/tests/interop/docker-compose.yml`.
+- **Passing against real servers** — nginx 1.27 (RSA and ECDSA), Apache httpd 2.4 and Caddy 2.10,
+  via `crates/tlsn/tests/interop/docker-compose.yml`. Four of the five interop cases pass.
 - **Fixed** — servers in middlebox-compatibility mode send a plaintext `change_cipher_spec` after
   `ServerHello`. RFC 8446 section 5 requires a client to ignore it during the handshake, but
   `push_incoming` fed every 1.3 record to `decrypt_record`, so opening a one-byte plaintext record
   killed the connection right after `ServerHello`. This affected every Go `crypto/tls` server, Caddy
   included.
-- **Open, Caddy** — with the `change_cipher_spec` handled, Caddy now reaches
-  `tls13 record authentication failed` instead. Leading hypothesis: Caddy sends **one handshake
-  message per record**, while nginx coalesces the whole flight into one record (as does the RFC 8448
-  trace the reference oracle is pinned against). Per-record sequence-number handling across a split
-  flight is the first thing to check.
-- **Open, OpenSSL `s_server`** — the handshake now completes and the response arrives, then the
-  session hangs. The trace shows `EncryptedExtensions`, `Certificate`, `CertificateVerify`,
-  `Finished`, **two** post-handshake `NewSessionTicket` messages, the application data, and a
-  `close_notify` — eight records against a fixture configured with
-  `max_recv_records_online(8)`. Whether the post-handshake tickets are accounted for correctly is the
-  first thing to check. A hang, rather than an error, is the worst failure mode here and should be
-  turned into a clean rejection regardless of the root cause.
+- **Fixed** — the decrypt epoch was applied too late. A 1.3 record's epoch is decided by handshake
+  progress: everything through the server's `Finished` uses handshake keys, everything after uses
+  application keys. The client signals the switch via `set_decrypt`, but only once it has *processed*
+  the `Finished`, whereas `push_incoming` decrypted **on arrival**. Any record sharing a read with
+  the `Finished` was therefore opened with a stale epoch. A server that coalesces its
+  `NewSessionTicket` into that batch — Go's `crypto/tls` does, so Caddy does — had the ticket opened
+  under handshake keys and failed the AEAD tag with `tls13 record authentication failed`.
+  Records are now queued raw and decrypted in `next_incoming`, under whichever epoch is current then.
+  This is worth understanding before touching the record path: decrypt-on-arrival is *structurally*
+  wrong for 1.3, and it happened to work only against servers that leave a gap after `Finished`.
+- **Open, OpenSSL `s_server`** — the only remaining interop failure, and the least representative
+  (a test utility, not a production server; nginx, Apache and Caddy cover the real web). The
+  handshake completes and the full response arrives — `EncryptedExtensions`, `Certificate`,
+  `CertificateVerify`, `Finished`, **two** post-handshake `NewSessionTicket` messages, the
+  application data, then `close_notify` — and the session then hangs rather than completing. The
+  epoch fix above did **not** resolve it, so it is a distinct bug, not a decryption failure: every
+  record decrypts and the stall is after all data has arrived. That is eight records against a
+  fixture configured with `max_recv_records_online(8)`, so record accounting around the two
+  post-handshake tickets is the first thing to check. A hang is the worst available failure mode and
+  should become a clean rejection whatever the cause.
 - **Caution on the interop suite** — the five `tls13_interop` cases `return` early unless
   `TLSN_RUN_DOCKER_INTEROP=1` is set, and so pass in 0.00s having tested nothing. Treat a green run
   without that variable as no evidence at all.
