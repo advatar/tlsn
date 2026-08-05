@@ -53,6 +53,53 @@ pub struct SignedArtifact {
     pub pq_signature: Option<String>,
 }
 
+/// Recursively rewrites `value` so that every object's keys are in sorted order.
+///
+/// Arrays keep their order — it is semantically meaningful — and scalars are
+/// copied unchanged.
+fn canonical_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+            let mut sorted = serde_json::Map::with_capacity(map.len());
+            for (key, item) in entries {
+                sorted.insert(key.clone(), canonical_value(item));
+            }
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical_value).collect()),
+        scalar => scalar.clone(),
+    }
+}
+
+/// The exact bytes covered by the ES256 signature and by any ML-DSA-65 signature.
+///
+/// # Why this exists
+///
+/// `verifier_output` is a [`Value`], and whether a `Value` map serializes with
+/// sorted keys (`BTreeMap`) or in insertion order (`IndexMap`) is decided by
+/// serde_json's `preserve_order` feature. That feature is set by *whole-graph
+/// feature unification*, so a dependency elsewhere in the build can flip it out
+/// from under this crate — in this workspace it arrives transitively via
+/// `tlsn-examples` -> noir. Two builds of the same code would then derive
+/// different messages from one artifact and reject each other's signatures.
+///
+/// Emitting keys in sorted order removes that dependence. Sorted order is the
+/// fixpoint: an independent verifier that parses these bytes and re-serializes
+/// them reproduces them byte-for-byte under *either* resolution. [`ArtifactSigner::sign`]
+/// therefore also stores the canonical form in the artifact, so the bytes on the
+/// wire already are the bytes that were signed.
+pub fn signing_bytes(payload: &ArtifactPayload) -> Result<Vec<u8>, ArtifactError> {
+    let canonical = ArtifactPayload {
+        version: payload.version.clone(),
+        session_id: payload.session_id.clone(),
+        issued_at: payload.issued_at,
+        verifier_output: canonical_value(&payload.verifier_output),
+    };
+    serde_json::to_vec(&canonical).map_err(|e| ArtifactError::Encoding(e.to_string()))
+}
+
 /// Errors produced while signing or verifying portable artifacts.
 #[derive(Debug, thiserror::Error)]
 pub enum ArtifactError {
@@ -113,14 +160,15 @@ impl ArtifactSigner {
         issued_at: u64,
         verifier_output: Value,
     ) -> Result<SignedArtifact, ArtifactError> {
+        // Store the canonical form, so the bytes on the wire are the bytes signed
+        // and any verifier that re-derives the message agrees. See `signing_bytes`.
         let payload = ArtifactPayload {
             version: ARTIFACT_VERSION.into(),
             session_id: session_id.into(),
             issued_at,
-            verifier_output,
+            verifier_output: canonical_value(&verifier_output),
         };
-        let message =
-            serde_json::to_vec(&payload).map_err(|e| ArtifactError::Encoding(e.to_string()))?;
+        let message = signing_bytes(&payload)?;
         let signature: Signature = self.0.sign(&message);
         Ok(SignedArtifact {
             payload,
@@ -153,8 +201,7 @@ impl SignedArtifact {
             .map_err(|e| ArtifactError::Encoding(e.to_string()))?;
         let signature =
             Signature::from_slice(&signature_bytes).map_err(|_| ArtifactError::InvalidSignature)?;
-        let message = serde_json::to_vec(&self.payload)
-            .map_err(|e| ArtifactError::Encoding(e.to_string()))?;
+        let message = signing_bytes(&self.payload)?;
         key.verify(&message, &signature)
             .map_err(|_| ArtifactError::InvalidSignature)
     }
@@ -202,8 +249,9 @@ mod pq {
             .try_into()
             .map_err(|_| ArtifactError::Encoding("invalid ML-DSA-65 secret key length".into()))?;
         let signing_key = MLDSA65SigningKey::new(encoded);
-        let message = serde_json::to_vec(&artifact.payload)
-            .map_err(|e| ArtifactError::Encoding(e.to_string()))?;
+        // The same canonical bytes ES256 covers, so both signatures are over one
+        // message and a downgrade is not possible by disagreeing on encoding.
+        let message = super::signing_bytes(&artifact.payload)?;
         let mut randomness = [0_u8; 32];
         OsRng.fill_bytes(&mut randomness);
         let signature = sign(&signing_key, &message, &[], randomness)
