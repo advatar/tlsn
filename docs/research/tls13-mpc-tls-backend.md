@@ -61,22 +61,57 @@ ones I would make:
 
 ---
 
-## 2. Current TLS 1.3 state in this fork (what actually needs fixing)
+## 2. Current TLS 1.3 state in this fork
 
-There is already a partial, **non-functional** 1.3 path. The rewrite should replace it, not extend it.
+> **Corrected 2026-08-05.** An earlier revision of this section claimed the 1.3 path was
+> non-functional because "the follower never receives the server handshake records (the leader
+> captures them but does not relay)", causing `validate_tls13_finished` to always error *"server
+> finished was not observed in the transcript."* **That diagnosis was wrong on every point**, and the
+> conclusion drawn from it — that a fresh backend was needed — did not follow. What was actually
+> verified:
+>
+> - The relay exists. `crates/mpc-tls/src/leader.rs` sends `Message::Tls13RecvRecord` and
+>   `crates/mpc-tls/src/follower.rs` receives it into `tls13_recv_records`.
+> - `validate_tls13_finished` was never reached. Every `tls13_*` test failed on its **first**
+>   assertion — `left: V1_2, right: V1_3` — because `crates/tlsn/src/prover.rs` hard-pinned the
+>   offered version to 1.2, so no session ever negotiated 1.3.
+> - Once 1.3 can be offered, the path works. `validate_tls13_finished` is reached and passes; this was
+>   confirmed by temporarily making the `TlsVersion::V1_3` arm return an error and observing both
+>   prover and verifier fail, which proves the code executes rather than being skipped.
+>
+> Lesson for anyone extending this document: confirming that a symbol *exists* in two files is not
+> the same as confirming the logic between them is missing. Run the tests.
 
-- `crates/mpc-tls/src/tls13.rs` — incremental 1.3 leader/follower code. The **follower never receives the
-  server handshake records** (the leader captures them but does not relay; the follower's
-  `tls13_recv_records` is empty), so…
-- `crates/core/src/transcript/tls.rs` — `validate_tls13_finished` always errors
-  **"server finished was not observed in the transcript."** This is the concrete symptom.
-- `crates/tlsn/tests/tls13_matrix.rs`, `crates/tlsn/tests/tls13_interop.rs` — fixtures/tests exist but do
-  not exercise a working path.
+The 1.3 path is **substantially working**, not a stub. As of 2026-08-05:
 
-> Diagnosis (2026-08): the leader parses the coalesced 1.3 server flight fine (a separate one-line
-> coalescing bug in the validator was found and reverted); the blocker is that the **follower scans zero
-> records**. A clean leader↔follower record-relay + state machine is the fix, which is why a fresh backend
-> is the right call.
+- **Passing** — 6 end-to-end MPC-TLS 1.3 notarizations against the in-repo rustls fixture
+  (`crates/tlsn/tests/tls13_matrix.rs`, 5 cases across RSA/ECDSA chains and none/optional/required
+  client auth, plus `test_tls13`). Each asserts the negotiated version is `V1_3` and runs the full
+  commit → connect → prove → verify flow.
+- **Passing against real servers** — nginx 1.27 (RSA and ECDSA) and Apache httpd 2.4, via
+  `crates/tlsn/tests/interop/docker-compose.yml`.
+- **Fixed** — servers in middlebox-compatibility mode send a plaintext `change_cipher_spec` after
+  `ServerHello`. RFC 8446 section 5 requires a client to ignore it during the handshake, but
+  `push_incoming` fed every 1.3 record to `decrypt_record`, so opening a one-byte plaintext record
+  killed the connection right after `ServerHello`. This affected every Go `crypto/tls` server, Caddy
+  included.
+- **Open, Caddy** — with the `change_cipher_spec` handled, Caddy now reaches
+  `tls13 record authentication failed` instead. Leading hypothesis: Caddy sends **one handshake
+  message per record**, while nginx coalesces the whole flight into one record (as does the RFC 8448
+  trace the reference oracle is pinned against). Per-record sequence-number handling across a split
+  flight is the first thing to check.
+- **Open, OpenSSL `s_server`** — the handshake now completes and the response arrives, then the
+  session hangs. The trace shows `EncryptedExtensions`, `Certificate`, `CertificateVerify`,
+  `Finished`, **two** post-handshake `NewSessionTicket` messages, the application data, and a
+  `close_notify` — eight records against a fixture configured with
+  `max_recv_records_online(8)`. Whether the post-handshake tickets are accounted for correctly is the
+  first thing to check. A hang, rather than an error, is the worst failure mode here and should be
+  turned into a clean rejection regardless of the root cause.
+- **Caution on the interop suite** — the five `tls13_interop` cases `return` early unless
+  `TLSN_RUN_DOCKER_INTEROP=1` is set, and so pass in 0.00s having tested nothing. Treat a green run
+  without that variable as no evidence at all.
+
+What remains is therefore incremental hardening of the existing path, not a rewrite.
 
 ---
 

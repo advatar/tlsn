@@ -1150,6 +1150,24 @@ impl Backend for MpcTlsLeader {
 
     #[instrument(level = "debug", skip_all, err)]
     async fn push_incoming(&mut self, msg: OpaqueMessage) -> Result<(), BackendError> {
+        // A TLS 1.3 server in middlebox-compatibility mode sends a plaintext
+        // `change_cipher_spec` after its `ServerHello`. RFC 8446 section 5 says a
+        // client MUST ignore such records while the handshake is in progress, and
+        // they are not part of the handshake transcript. Go's crypto/tls always
+        // sends one (so Caddy does); feeding it to `decrypt_record` below would
+        // try to AEAD-open a one-byte plaintext record and kill the connection
+        // immediately after `ServerHello`.
+        if msg.typ == ContentType::ChangeCipherSpec {
+            if let State::Handshake {
+                protocol_version: Some(ProtocolVersion::TLSv1_3),
+                ..
+            } = &self.state
+            {
+                debug!("ignoring middlebox-compatibility change_cipher_spec");
+                return Ok(());
+            }
+        }
+
         match &mut self.state {
             State::Handshake {
                 ctx,
