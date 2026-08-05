@@ -139,6 +139,43 @@ impl MpcAesGcm {
         Ok(())
     }
 
+    /// Allocates one record's worth of TLS 1.3 material against a secret nonce.
+    ///
+    /// TLS 1.2 allocates everything up front in [`MpcAesGcm::alloc`]: one long
+    /// keystream, sliced per record, plus a pool of J0 blocks whose public nonces
+    /// are filled in as records arrive. TLS 1.3 cannot share a keystream that way,
+    /// because each record's nonce is a distinct secret value (`iv XOR seq`) and a
+    /// keystream is bound to one nonce reference. And its application keys only
+    /// exist once the handshake hash is set, after `alloc` has already run.
+    ///
+    /// So 1.3 allocates per record, at record time, once the length is known. That
+    /// trades away the preprocessing overlap 1.2 enjoys in exchange for keeping the
+    /// traffic keys secret-shared, which is the property that matters.
+    ///
+    /// Returns the keystream for the record body and the J0 block used for its tag.
+    #[allow(clippy::type_complexity)]
+    #[allow(dead_code)]
+    pub(crate) fn alloc_record_tls13(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        nonce: Nonce,
+        len: usize,
+    ) -> Result<
+        (
+            Keystream<Nonce, Ctr, Block>,
+            CtrBlock<Nonce, Ctr, Block>,
+            OneTimePadShared<[u8; 16]>,
+        ),
+        AeadError,
+    > {
+        let keystream = self.aes.alloc_keystream_with_nonce(vm, len, nonce)?;
+
+        let j0 = self.aes.alloc_ctr_block_with_nonce(vm, nonce)?;
+        let j0_shared = OneTimePadShared::<[u8; 16]>::new(self.role, j0.output, vm)?;
+
+        Ok((keystream, j0, j0_shared))
+    }
+
     pub(crate) async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), AeadError> {
         let State::Setup { ghash, .. } = &mut self.state else {
             return Err(AeadError::state("must be in setup state to preprocess"));
@@ -441,6 +478,24 @@ fn assign_j0(
 ) -> Result<(), AeadError> {
     vm.assign(j0.explicit_nonce, explicit_nonce)?;
     vm.commit(j0.explicit_nonce)?;
+    vm.assign(j0.counter, 1u32.to_be_bytes())?;
+    vm.commit(j0.counter)?;
+
+    Ok(())
+}
+
+/// Assigns a J0 block's counter, leaving its nonce alone.
+///
+/// The TLS 1.3 counterpart to [`assign_j0`]. There the nonce is a public value
+/// read off the wire and assigned here; in TLS 1.3 it is `iv XOR seq`, computed
+/// inside the VM and already committed by whoever derived it, so assigning it
+/// again would double-commit. Only the counter — always 1 for J0, per NIST
+/// SP 800-38D — is set here.
+#[allow(dead_code)]
+fn assign_j0_counter(
+    vm: &mut dyn Vm<Binary>,
+    j0: CtrBlock<Nonce, Ctr, Block>,
+) -> Result<(), AeadError> {
     vm.assign(j0.counter, 1u32.to_be_bytes())?;
     vm.commit(j0.counter)?;
 
