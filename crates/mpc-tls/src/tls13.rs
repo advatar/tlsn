@@ -1,4 +1,4 @@
-mod nonce;
+pub(crate) mod nonce;
 
 use aes_gcm::{aead::AeadInPlace, Aes128Gcm, NewAead};
 use hmac::{Hmac, Mac};
