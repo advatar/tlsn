@@ -32,7 +32,7 @@ use tlsn_core::{
     config::{
         prove::ProveConfig,
         prover::ProverConfig,
-        tls::TlsClientConfig,
+        tls::{OfferedVersions, TlsClientConfig},
         tls_commit::{TlsCommitConfig, TlsCommitProtocolConfig},
     },
     connection::{HandshakeData, ServerName},
@@ -195,15 +195,22 @@ impl Prover<state::CommitAccepted> {
                 .collect::<Result<Vec<_>, _>>()?,
         };
 
-        // Pin the offered TLS version to 1.2. This fork's MPC-TLS notary/verifier only completes for
-        // TLS 1.2: the TLS 1.3 verifier path is incomplete (the follower never receives the handshake
-        // records, so it can never observe the server Finished). Offering only 1.2 makes dual-stack
-        // servers (e.g. example.com) negotiate the protocol TLSNotary actually supports.
+        // Which versions to offer decides which MPC-TLS path the session takes, because a dual-stack
+        // server negotiates the best it is offered. Only TLS 1.2 completes end to end in this fork,
+        // so that stays the default; offering 1.3 is opt-in and selects an incomplete path.
+        let versions: &[&tls_client::SupportedProtocolVersion] = match config.offered_versions() {
+            OfferedVersions::Tls12Only => &[&tls_client::version::TLS12],
+            OfferedVersions::Tls13Only => &[&tls_client::version::TLS13],
+            OfferedVersions::Tls12AndTls13 => {
+                &[&tls_client::version::TLS12, &tls_client::version::TLS13]
+            }
+        };
+
         let rustls_config = tls_client::ClientConfig::builder()
             .with_safe_default_cipher_suites()
             .with_safe_default_kx_groups()
-            .with_protocol_versions(&[&tls_client::version::TLS12])
-            .expect("TLS 1.2 is a supported protocol version")
+            .with_protocol_versions(versions)
+            .expect("TLS 1.2 and 1.3 are supported protocol versions")
             .with_root_certificates(root_store);
 
         let rustls_config = if let Some((cert, key)) = config.client_auth() {

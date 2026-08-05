@@ -4,7 +4,7 @@ use tlsn::{
     config::{
         prove::ProveConfig,
         prover::ProverConfig,
-        tls::TlsClientConfig,
+        tls::{OfferedVersions, TlsClientConfig},
         tls_commit::{TlsCommitConfig, mpc::MpcTlsConfig},
         verifier::VerifierConfig,
     },
@@ -40,6 +40,10 @@ impl Tls13TestCase {
     pub fn tls_client_config(&self) -> TlsClientConfig {
         let mut builder = TlsClientConfig::builder()
             .server_name(ServerName::Dns(self.server_name.try_into().unwrap()))
+            // Offer 1.3 only. Without this the default 1.2-only pin makes the
+            // server negotiate 1.2 and these cases fail on the version
+            // assertion below, never reaching the 1.3 path they exist to test.
+            .offered_versions(OfferedVersions::Tls13Only)
             .root_store(RootCertStore {
                 roots: self.roots.clone(),
             });
