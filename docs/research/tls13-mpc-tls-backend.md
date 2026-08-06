@@ -1,6 +1,6 @@
 # TLS 1.3 MPC-TLS backend — assessment & research plan
 
-**Status:** research task, not yet started · **Audience:** MPC-TLS engineer picking this up
+**Status:** key-disclosure hole closed; 1.3 non-functional pending joint AEAD (steps B–D) · **Audience:** MPC-TLS engineer picking this up
 **Companion:** [`tls13-mpc-tls-backend.proposal.md`](./tls13-mpc-tls-backend.proposal.md) — the original design brief.
 
 ---
@@ -82,7 +82,24 @@ ones I would make:
 > Lesson for anyone extending this document: confirming that a symbol *exists* in two files is not
 > the same as confirming the logic between them is missing. Run the tests.
 
-> ## ⚠ The 1.3 path has no security guarantee. Do not present it as supported.
+> ## ✅ The key-disclosure hole is closed — and 1.3 is non-functional as a result
+>
+> **Resolved.** The application traffic keys are no longer decoded. `set_handshake_hash` keeps them as
+> VM references, exactly as the TLS 1.2 path always has, and the plaintext shadow copy
+> (`clear_application`) and the local `Aes128Gcm` that consumed it are gone.
+>
+> **Consequence, accepted deliberately:** TLS 1.3 application records now fail with an explicit error
+> until joint AEAD is wired up, so the six fixture tests and the three passing interop cases are
+> `#[ignore]`d. This was the expert's explicit recommendation — remove the disclosure first, even at
+> the cost of a working path — on the grounds that an unusable 1.3 is strictly safer than a working
+> one with no provenance, and it makes shipping the hole impossible rather than merely discouraged.
+> The handshake epoch still completes; only the application epoch is blocked.
+>
+> The remaining work is tracked as steps B–D: typed read/write epochs owning sequence numbers,
+> cryptographically gated authenticated release, then the security-assumption inventory and
+> protocol-security tests. `Tls13Unsafe` and its runtime warning stay until all of it lands.
+>
+> ### The original defect, for the record
 >
 > **The prover learns the TLS 1.3 application traffic keys in the clear.** In
 > `crates/mpc-tls/src/tls13.rs`, `set_handshake_hash` calls `vm.decode(..)` on all four application

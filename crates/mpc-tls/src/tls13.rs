@@ -6,9 +6,9 @@ use hmac_sha256::{Mode, Role as KeyScheduleRole, Tls13KeySched};
 use mpz_common::Context;
 use mpz_memory_core::{
     binary::{Binary, U8},
-    Array, MemoryExt,
+    Array,
 };
-use mpz_vm_core::{Execute, Vm as VmTrait};
+use mpz_vm_core::Vm as VmTrait;
 use sha2::Sha256;
 use tls_core::msgs::{
     base::Payload,
@@ -81,20 +81,9 @@ pub struct Tls13SessionKeys {
     pub application: Option<Tls13ApplicationKeys>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Tls13ClearApplicationKeys {
-    client_write_key: [u8; 16],
-    client_write_iv: [u8; 12],
-    client_sequence: u64,
-    server_write_key: [u8; 16],
-    server_write_iv: [u8; 12],
-    server_sequence: u64,
-}
-
 pub(crate) struct Tls13KeyState {
     inner: Tls13KeySched,
     keys: Tls13SessionKeys,
-    clear_application: Option<Tls13ClearApplicationKeys>,
 }
 
 impl Tls13KeyState {
@@ -107,7 +96,6 @@ impl Tls13KeyState {
         Self {
             inner: Tls13KeySched::new(mode, role),
             keys: Tls13SessionKeys::default(),
-            clear_application: None,
         }
     }
 
@@ -160,15 +148,15 @@ impl Tls13KeyState {
         self.flush_all(ctx, vm).await?;
 
         let keys = self.inner.application_keys()?;
-        let mut client_key = vm.decode(keys.client_write_key).map_err(MpcTlsError::hs)?;
-        let mut client_iv = vm.decode(keys.client_iv).map_err(MpcTlsError::hs)?;
-        let mut server_key = vm.decode(keys.server_write_key).map_err(MpcTlsError::hs)?;
-        let mut server_iv = vm.decode(keys.server_iv).map_err(MpcTlsError::hs)?;
 
-        Execute::execute_all(vm, ctx)
-            .await
-            .map_err(MpcTlsError::hs)?;
-
+        // The application traffic keys are deliberately NOT decoded. They were,
+        // until this commit, and that voided the entire point of the protocol: a
+        // prover holding `server_write_key` can encrypt anything it likes under the
+        // server's key and present it as the server's response.
+        //
+        // They stay VM references, as the TLS 1.2 path has always kept them, and
+        // records are protected by joint AEAD instead. Anything that needs a
+        // plaintext key here is a bug, not a missing feature.
         self.keys.application = Some(Tls13ApplicationKeys {
             epoch: Epoch::Application,
             client_write_key: keys.client_write_key,
@@ -176,26 +164,6 @@ impl Tls13KeyState {
             client_sequence: 0,
             server_write_key: keys.server_write_key,
             server_write_iv: keys.server_iv,
-            server_sequence: 0,
-        });
-        self.clear_application = Some(Tls13ClearApplicationKeys {
-            client_write_key: client_key
-                .try_recv()
-                .map_err(MpcTlsError::hs)?
-                .ok_or_else(|| MpcTlsError::hs("tls13 client application key not decoded"))?,
-            client_write_iv: client_iv
-                .try_recv()
-                .map_err(MpcTlsError::hs)?
-                .ok_or_else(|| MpcTlsError::hs("tls13 client application iv not decoded"))?,
-            client_sequence: 0,
-            server_write_key: server_key
-                .try_recv()
-                .map_err(MpcTlsError::hs)?
-                .ok_or_else(|| MpcTlsError::hs("tls13 server application key not decoded"))?,
-            server_write_iv: server_iv
-                .try_recv()
-                .map_err(MpcTlsError::hs)?
-                .ok_or_else(|| MpcTlsError::hs("tls13 server application iv not decoded"))?,
             server_sequence: 0,
         });
 
@@ -253,19 +221,11 @@ impl Tls13KeyState {
                     msg,
                 )
             }
-            Epoch::Application => {
-                let keys = self
-                    .clear_application
-                    .as_mut()
-                    .ok_or_else(|| MpcTlsError::hs("tls13 application keys are not available"))?;
-
-                encrypt_tls13_record(
-                    keys.client_write_key,
-                    keys.client_write_iv,
-                    &mut keys.client_sequence,
-                    msg,
-                )
-            }
+            Epoch::Application => Err(MpcTlsError::hs(
+                "tls13 application records require joint AEAD, which is not wired up yet; \
+                 the plaintext application keys this used to rely on were removed because \
+                 they let the prover forge server responses",
+            )),
         }
     }
 
@@ -289,19 +249,11 @@ impl Tls13KeyState {
                     msg,
                 )
             }
-            Epoch::Application => {
-                let keys = self
-                    .clear_application
-                    .as_mut()
-                    .ok_or_else(|| MpcTlsError::hs("tls13 application keys are not available"))?;
-
-                decrypt_tls13_record(
-                    keys.server_write_key,
-                    keys.server_write_iv,
-                    &mut keys.server_sequence,
-                    msg,
-                )
-            }
+            Epoch::Application => Err(MpcTlsError::hs(
+                "tls13 application records require joint AEAD, which is not wired up yet; \
+                 the plaintext application keys this used to rely on were removed because \
+                 they let the prover forge server responses",
+            )),
         }
     }
 

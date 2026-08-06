@@ -8,6 +8,8 @@ use tokio::io::duplex;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "TLS 1.3 application records need joint AEAD; the plaintext application keys \
+this path relied on were removed because they let the prover forge server responses"]
 async fn test_tls13() {
     let _ = tracing_subscriber::fmt::try_init();
 
