@@ -342,15 +342,24 @@ impl RecordLayer {
             .try_lock()
             .map_err(|_| MpcTlsError::record_layer("encrypt lock is held"))?;
 
-        let (input, output, j0) = encrypter
+        let (leader_input, follower_input, output, j0) = encrypter
             .take_tls13_record(len)
             .map_err(MpcTlsError::record_layer)?;
-        if let Some(mut plaintext) = plaintext {
-            plaintext.resize(input.len(), 0);
-            vm.assign(input, plaintext)
-                .map_err(MpcTlsError::record_layer)?;
-        }
-        vm.commit(input).map_err(MpcTlsError::record_layer)?;
+        let (local_input, mut local_value) = match self.role {
+            Role::Leader => (
+                leader_input,
+                plaintext.ok_or_else(|| {
+                    MpcTlsError::record_layer("leader TLS 1.3 plaintext is missing")
+                })?,
+            ),
+            Role::Follower => (follower_input, vec![0u8; follower_input.len()]),
+        };
+        local_value.resize(local_input.len(), 0);
+        vm.assign(local_input, local_value)
+            .map_err(MpcTlsError::record_layer)?;
+        vm.commit(leader_input).map_err(MpcTlsError::record_layer)?;
+        vm.commit(follower_input)
+            .map_err(MpcTlsError::record_layer)?;
 
         let mut output_fut = vm.decode(output).map_err(MpcTlsError::record_layer)?;
         let tag_output = vm
@@ -404,49 +413,60 @@ impl RecordLayer {
             .try_lock()
             .map_err(|_| MpcTlsError::record_layer("decrypt lock is held"))?;
 
-        let (mask, masked_keystream, j0) = decrypter
+        let (leader_mask, follower_mask, masked_keystream, j0) = decrypter
             .take_tls13_record(ciphertext.len())
             .map_err(MpcTlsError::record_layer)?;
-        let otp = match self.role {
-            Role::Leader => {
-                let mut otp = vec![0u8; mask.len()];
-                rand::rng().fill_bytes(&mut otp);
-                vm.assign(mask, otp.clone())
-                    .map_err(MpcTlsError::record_layer)?;
-                Some(otp)
-            }
-            Role::Follower => None,
+        let local_mask = match self.role {
+            Role::Leader => leader_mask,
+            Role::Follower => follower_mask,
         };
-        vm.commit(mask).map_err(MpcTlsError::record_layer)?;
+        let mut local_otp = vec![0u8; local_mask.len()];
+        rand::rng().fill_bytes(&mut local_otp);
+        vm.assign(local_mask, local_otp.clone())
+            .map_err(MpcTlsError::record_layer)?;
+        vm.commit(leader_mask).map_err(MpcTlsError::record_layer)?;
+        vm.commit(follower_mask)
+            .map_err(MpcTlsError::record_layer)?;
         let mut masked_fut = vm
             .decode(masked_keystream)
             .map_err(MpcTlsError::record_layer)?;
         let verify_tag = decrypter
-            .verify_tag_tls13_preallocated(ciphertext.clone(), aad, tag, j0)
+            .verify_tag_tls13_preallocated(
+                ciphertext.clone(),
+                aad,
+                tag,
+                j0,
+                (self.role == Role::Follower).then(|| local_otp.clone()),
+            )
             .map_err(MpcTlsError::record_layer)?;
 
-        let (verified, _) = ctx
+        let (mut releases, _) = ctx
             .try_join(
                 async move |ctx| verify_tag.run(ctx).map_err(MpcTlsError::record_layer).await,
                 async move |ctx| vm.execute_all(ctx).map_err(MpcTlsError::record_layer).await,
             )
             .await
             .map_err(MpcTlsError::record_layer)??;
-        let () = verified;
 
         let masked_keystream = masked_fut
             .try_recv()
             .map_err(MpcTlsError::record_layer)?
             .ok_or_else(|| MpcTlsError::record_layer("TLS 1.3 plaintext mask is not ready"))?;
-        let Some(otp) = otp else {
+        if self.role == Role::Follower {
             return Ok(None);
-        };
+        }
+        let follower_otp = releases
+            .pop()
+            .ok_or_else(|| MpcTlsError::record_layer("authenticated mask was not released"))?;
         let mut plaintext = ciphertext;
         plaintext
             .iter_mut()
-            .zip(otp)
+            .zip(local_otp)
+            .zip(follower_otp)
             .zip(masked_keystream)
-            .for_each(|((byte, otp), keystream)| *byte ^= otp ^ keystream);
+            .for_each(|(((byte, leader_otp), follower_otp), keystream)| {
+                *byte ^= leader_otp ^ follower_otp ^ keystream
+            });
 
         Ok(Some(plaintext))
     }
@@ -454,6 +474,46 @@ impl RecordLayer {
     pub(crate) fn start_traffic(&mut self) {
         self.started = true;
         debug!("started processing application data");
+    }
+
+    /// Assigns zero to every unused private TLS 1.3 record input so the VM can
+    /// validate and finalize the complete preprocessed graph.
+    pub(crate) async fn finalize_tls13(
+        &mut self,
+        ctx: &mut Context,
+        vm: Vm,
+    ) -> Result<(), MpcTlsError> {
+        let mut vm = vm
+            .try_lock_owned()
+            .map_err(|_| MpcTlsError::record_layer("VM lock is held"))?;
+        let mut encrypter = self
+            .encrypter
+            .try_lock()
+            .map_err(|_| MpcTlsError::record_layer("encrypt lock is held"))?;
+        let mut decrypter = self
+            .decrypt
+            .try_lock()
+            .map_err(|_| MpcTlsError::record_layer("decrypt lock is held"))?;
+        let inputs = encrypter
+            .drain_tls13_inputs()
+            .map_err(MpcTlsError::record_layer)?
+            .into_iter()
+            .chain(
+                decrypter
+                    .drain_tls13_inputs()
+                    .map_err(MpcTlsError::record_layer)?,
+            );
+        for (leader, follower) in inputs {
+            let local = match self.role {
+                Role::Leader => leader,
+                Role::Follower => follower,
+            };
+            vm.assign(local, vec![0u8; local.len()])
+                .map_err(MpcTlsError::record_layer)?;
+            vm.commit(leader).map_err(MpcTlsError::record_layer)?;
+            vm.commit(follower).map_err(MpcTlsError::record_layer)?;
+        }
+        vm.execute_all(ctx).await.map_err(MpcTlsError::record_layer)
     }
 
     pub(crate) fn push_encrypt(

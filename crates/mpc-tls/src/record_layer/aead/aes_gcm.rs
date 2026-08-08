@@ -1,6 +1,7 @@
 use std::{collections::VecDeque, future::Future, sync::Arc};
 
 use cipher::{aes::Aes128, Cipher, CtrBlock, Keystream};
+use mpz_circuits::circuits::xor;
 use mpz_common::{Context, Flush};
 use mpz_fields::gf2_128::Gf2_128;
 use mpz_memory_core::{
@@ -8,7 +9,7 @@ use mpz_memory_core::{
     Vector,
 };
 use mpz_share_conversion::ShareConvert;
-use mpz_vm_core::{prelude::*, Vm};
+use mpz_vm_core::{prelude::*, CallBuilder, Vm};
 use tracing::instrument;
 
 use crate::{
@@ -26,7 +27,8 @@ use crate::{
 const START_CTR: u32 = 2;
 
 struct Tls13Record {
-    input: Vector<U8>,
+    leader_input: Vector<U8>,
+    follower_input: Vector<U8>,
     output: Vector<U8>,
     j0: OneTimePadShared<[u8; 16]>,
 }
@@ -197,11 +199,25 @@ impl MpcAesGcm {
             let keystream = self
                 .tls13_aes
                 .alloc_keystream_with_nonce(vm, padded_len, nonce)?;
-            let input = vm.alloc_vec::<U8>(padded_len)?;
+            let leader_input = vm.alloc_vec::<U8>(padded_len)?;
+            let follower_input = vm.alloc_vec::<U8>(padded_len)?;
             match self.role {
-                Role::Leader => vm.mark_private(input)?,
-                Role::Follower => vm.mark_blind(input)?,
+                Role::Leader => {
+                    vm.mark_private(leader_input)?;
+                    vm.mark_blind(follower_input)?;
+                }
+                Role::Follower => {
+                    vm.mark_blind(leader_input)?;
+                    vm.mark_private(follower_input)?;
+                }
             }
+            let input: Vector<U8> = vm.call(
+                CallBuilder::new(Arc::new(xor(padded_len * 8)))
+                    .arg(leader_input)
+                    .arg(follower_input)
+                    .build()
+                    .map_err(|err| AeadError::cipher(err.to_string()))?,
+            )?;
             let output = keystream.apply(vm, input)?;
             let mut ctr = START_CTR..;
             keystream.assign_counters(vm, move || {
@@ -212,7 +228,8 @@ impl MpcAesGcm {
             let j0_shared = OneTimePadShared::<[u8; 16]>::new(self.role, j0.output, vm)?;
             assign_j0_counter(vm, j0)?;
             tls13_records.push_back(Tls13Record {
-                input,
+                leader_input,
+                follower_input,
                 output,
                 j0: j0_shared,
             });
@@ -382,14 +399,23 @@ impl MpcAesGcm {
     pub(crate) fn take_tls13_record(
         &mut self,
         len: usize,
-    ) -> Result<(Vector<U8>, Vector<U8>, OneTimePadShared<[u8; 16]>), AeadError> {
+    ) -> Result<
+        (
+            Vector<U8>,
+            Vector<U8>,
+            Vector<U8>,
+            OneTimePadShared<[u8; 16]>,
+        ),
+        AeadError,
+    > {
         let State::Ready { tls13_records, .. } = &mut self.state else {
             return Err(AeadError::state(
                 "must be in ready state to take a TLS 1.3 record",
             ));
         };
         let Tls13Record {
-            input,
+            leader_input,
+            follower_input,
             mut output,
             j0,
         } = tls13_records
@@ -401,7 +427,22 @@ impl MpcAesGcm {
             ));
         }
         output.truncate(len);
-        Ok((input, output, j0))
+        Ok((leader_input, follower_input, output, j0))
+    }
+
+    /// Drains input references for unused preallocated TLS 1.3 records.
+    pub(crate) fn drain_tls13_inputs(
+        &mut self,
+    ) -> Result<Vec<(Vector<U8>, Vector<U8>)>, AeadError> {
+        let State::Ready { tls13_records, .. } = &mut self.state else {
+            return Err(AeadError::state(
+                "must be in ready state to drain TLS 1.3 records",
+            ));
+        };
+        Ok(tls13_records
+            .drain(..)
+            .map(|record| (record.leader_input, record.follower_input))
+            .collect())
     }
 
     /// Returns `len` bytes of input and output text.
@@ -671,6 +712,7 @@ impl MpcAesGcm {
                 ciphertext,
                 aad: data.aad,
                 tag,
+                release: None,
             });
         }
 
@@ -686,6 +728,7 @@ impl MpcAesGcm {
         aad: Vec<u8>,
         tag: Vec<u8>,
         j0: OneTimePadShared<[u8; 16]>,
+        release: Option<Vec<u8>>,
     ) -> Result<VerifyTags, AeadError> {
         let State::Ready { ghash, .. } = &mut self.state else {
             return Err(AeadError::state(
@@ -699,6 +742,7 @@ impl MpcAesGcm {
                 ciphertext,
                 aad,
                 tag,
+                release,
             }],
             ghash.clone(),
             0,
@@ -889,7 +933,7 @@ mod tests {
         // Both parties hold the key and the full 12-byte IV as VM references.
         // Marked public here only because IdealVm needs a concrete value; the
         // point under test is that neither is ever decoded.
-        let mut setup = |vm: &mut IdealVm| {
+        let setup = |vm: &mut IdealVm| {
             let key_ref = vm.alloc::<Array<U8, 16>>().unwrap();
             vm.mark_public(key_ref).unwrap();
             vm.assign(key_ref, key).unwrap();

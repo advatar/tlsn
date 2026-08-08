@@ -9,10 +9,10 @@
 - [x] Preallocate application-key share inputs and AEAD key-install circuits in the initial VM graph.
 - [x] Select only the negotiated protocol's GHASH key domain during record-layer setup.
 - [x] Preallocate bounded TLS 1.3 record AES/J0 circuits against the application key/IV outputs.
-- [ ] Implement joint AEAD over secret-shared TLS 1.3 application traffic keys.
+- [x] Implement joint AEAD over secret-shared TLS 1.3 application traffic keys.
 - [ ] Correct the research document's blocker diagnosis and M3 group.
 - [ ] Fix TLS 1.3 interoperability against Caddy and OpenSSL `s_server`.
-- [ ] Cryptographically gate authenticated plaintext release.
+- [x] Cryptographically gate authenticated plaintext release.
 - [ ] Re-enable and pass the focused TLS 1.3 fixture and interoperability tests.
 
 ## CR-001

@@ -19,7 +19,7 @@ use tlsn_core::ProverOutput;
 use tokio_util::compat::TokioAsyncReadCompatExt;
 
 // Maximum number of bytes that can be sent from prover to server
-const MAX_SENT_DATA: usize = 1 << 12;
+const MAX_SENT_DATA: usize = 1 << 10;
 // Maximum number of application records sent from prover to server
 const MAX_SENT_RECORDS: usize = 8;
 // Maximum number of bytes that can be received by prover from server

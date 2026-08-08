@@ -103,7 +103,7 @@ mod tests {
             let mut gen = IdealVm::new();
             let mut ev = IdealVm::new();
 
-            let mut run = |vm: &mut IdealVm| {
+            let run = |vm: &mut IdealVm| {
                 let iv_ref: Array<U8, 12> = vm.alloc().unwrap();
                 vm.mark_public(iv_ref).unwrap();
                 vm.assign(iv_ref, iv).unwrap();

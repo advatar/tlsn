@@ -511,6 +511,12 @@ impl MpcTlsFollower {
             }
         }
 
+        if protocol_version == Some(ProtocolVersion::TLSv1_3) {
+            record_layer
+                .finalize_tls13(&mut self.ctx, vm.clone())
+                .await?;
+        }
+
         let time = time.ok_or(MpcTlsError::hs("time was not set"))?;
         let server_key = server_key.ok_or(MpcTlsError::hs("server key not set"))?;
         let cf_vd = cf_vd.ok_or(MpcTlsError::hs("client finished VD not computed"))?;

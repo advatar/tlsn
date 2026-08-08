@@ -397,6 +397,9 @@ impl MpcTlsLeader {
         debug!("closing connection");
 
         ctx.io_mut().send(Message::CloseConnection).await?;
+        if protocol_version == ProtocolVersion::TLSv1_3 {
+            record_layer.finalize_tls13(&mut ctx, vm.clone()).await?;
+        }
 
         let cf_vd = cf_vd.ok_or(MpcTlsError::state("client finished verify data not set"))?;
         let sf_vd = sf_vd.ok_or(MpcTlsError::state("server finished verify data not set"))?;
