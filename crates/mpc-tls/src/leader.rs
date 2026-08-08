@@ -850,7 +850,7 @@ impl Backend for MpcTlsLeader {
             vm.execute_all(ctx).await.map_err(MpcTlsError::hs)?;
             debug!("TLS 1.3 application key-install circuits executed");
             drop(vm);
-            record_layer.setup(ctx).await?;
+            record_layer.setup_tls13(ctx).await?;
             debug!("TLS 1.3 application record layer is ready");
         }
 

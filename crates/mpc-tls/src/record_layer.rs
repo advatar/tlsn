@@ -272,6 +272,15 @@ impl RecordLayer {
 
     /// Sets up the record layer.
     pub(crate) async fn setup(&mut self, ctx: &mut Context) -> Result<(), MpcTlsError> {
+        self.setup_inner(ctx, false).await
+    }
+
+    /// Sets up the TLS 1.3 application-key record layer.
+    pub(crate) async fn setup_tls13(&mut self, ctx: &mut Context) -> Result<(), MpcTlsError> {
+        self.setup_inner(ctx, true).await
+    }
+
+    async fn setup_inner(&mut self, ctx: &mut Context, tls13: bool) -> Result<(), MpcTlsError> {
         let mut encrypt = self
             .encrypter
             .clone()
@@ -285,8 +294,20 @@ impl RecordLayer {
 
         // Computes GHASH keys in parallel.
         ctx.try_join(
-            async move |ctx| encrypt.setup(ctx).await,
-            async move |ctx| decrypt.setup(ctx).await,
+            async move |ctx| {
+                if tls13 {
+                    encrypt.setup_tls13(ctx).await
+                } else {
+                    encrypt.setup(ctx).await
+                }
+            },
+            async move |ctx| {
+                if tls13 {
+                    decrypt.setup_tls13(ctx).await
+                } else {
+                    decrypt.setup(ctx).await
+                }
+            },
         )
         .await
         .map_err(MpcTlsError::record_layer)?

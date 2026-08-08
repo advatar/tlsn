@@ -414,7 +414,7 @@ impl MpcTlsFollower {
                         .map_err(MpcTlsError::hs)?;
                     debug!("TLS 1.3 application key-install circuits executed");
                     drop(vm);
-                    record_layer.setup(&mut self.ctx).await?;
+                    record_layer.setup_tls13(&mut self.ctx).await?;
                     debug!("TLS 1.3 application record layer is ready");
                 }
                 Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {

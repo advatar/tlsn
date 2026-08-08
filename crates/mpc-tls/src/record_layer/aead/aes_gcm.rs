@@ -280,6 +280,20 @@ impl MpcAesGcm {
     }
 
     pub(crate) async fn setup(&mut self, ctx: &mut Context) -> Result<(), AeadError> {
+        self.setup_key_domain(ctx, 0).await
+    }
+
+    /// Sets up the TLS 1.3 application-key GHASH domain without waiting for
+    /// the unused TLS 1.2 key schedule.
+    pub(crate) async fn setup_tls13(&mut self, ctx: &mut Context) -> Result<(), AeadError> {
+        self.setup_key_domain(ctx, 1).await
+    }
+
+    async fn setup_key_domain(
+        &mut self,
+        ctx: &mut Context,
+        key_index: usize,
+    ) -> Result<(), AeadError> {
         let State::Setup {
             input,
             keystream,
@@ -292,11 +306,11 @@ impl MpcAesGcm {
             return Err(AeadError::state("must be in setup state to set up"));
         };
 
-        let mut keys = Vec::with_capacity(ghash_key_shares.len());
-        for key_share in &mut ghash_key_shares {
-            keys.push(key_share.await.map_err(AeadError::tag)?.to_vec());
-        }
-        ghash.set_keys(keys)?;
+        let key_share = ghash_key_shares
+            .get_mut(key_index)
+            .ok_or_else(|| AeadError::state("GHASH key domain was not allocated"))?;
+        let key = key_share.await.map_err(AeadError::tag)?.to_vec();
+        ghash.set_keys(vec![key])?;
         ghash.setup(ctx).await?;
 
         self.state = State::Ready {
@@ -530,7 +544,7 @@ impl MpcAesGcm {
                 aad,
             }],
             ghash.clone(),
-            1,
+            0,
         ))
     }
 
@@ -617,7 +631,7 @@ impl MpcAesGcm {
                 tag,
             }],
             ghash.clone(),
-            1,
+            0,
         ))
     }
 }
