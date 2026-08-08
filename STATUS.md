@@ -10,7 +10,7 @@
 - [x] Specify a review-ready computational proof target for the authenticated-release capsule and identify required construction hardening.
 - [x] Add Lean specifications and Kani implementation checks for typed epochs, sequence ownership, exhaustion, and nonce derivation.
 - [x] Establish executable equivalence checks between MPC AES/GHASH operations and the TLS 1.3 AES-GCM reference semantics.
-- [ ] Add adversarial tests for malformed, replayed, reordered, cross-epoch, and prematurely released records.
+- [x] Add adversarial tests for malformed, replayed, reordered, cross-epoch, and prematurely released records.
 - [x] Provide one-command reproduction of formal results and core validation-table entries; Docker interoperability remains a separate explicit suite.
 - [ ] Draft a publication-quality paper whose claims link to exact proof artifacts and whose limitations distinguish symbolic, computational, and implementation assurance.
 - [x] Create the initial cited manuscript, claim--evidence matrix, bibliography, and deterministic HTML/LaTeX build.

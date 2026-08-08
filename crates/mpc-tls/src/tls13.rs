@@ -649,7 +649,7 @@ mod tests {
     use tls_core::msgs::{
         base::Payload,
         enums::{ContentType, ProtocolVersion},
-        message::PlainMessage,
+        message::{OpaqueMessage, PlainMessage},
     };
     use tlsn_core::transcript::ContentType as TranscriptContentType;
 
@@ -813,6 +813,78 @@ mod tests {
         assert_eq!(decrypted_record.typ, TranscriptContentType::ApplicationData);
         assert_eq!(write_epoch.next_sequence(), 1);
         assert_eq!(read_epoch.next_sequence(), 1);
+    }
+
+    #[test]
+    fn malformed_short_record_is_rejected_before_sequence_consumption() {
+        let key = [0x11u8; 16];
+        let iv = [0x22u8; 12];
+        let malformed = OpaqueMessage {
+            typ: ContentType::ApplicationData,
+            version: ProtocolVersion::TLSv1_2,
+            payload: Payload::new(vec![0u8; 15]),
+        };
+        let mut read_epoch = ReadEpoch::new(Epoch::Application, 0, key, iv);
+
+        assert!(decrypt_tls13_record(&mut read_epoch, malformed).is_err());
+        assert_eq!(read_epoch.next_sequence(), 0);
+    }
+
+    #[test]
+    fn bad_tag_consumes_sequence_and_replay_fails_at_the_next_sequence() {
+        let key = [0x33u8; 16];
+        let iv = [0x44u8; 12];
+        let plain = PlainMessage {
+            typ: ContentType::ApplicationData,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(b"one-shot record".to_vec()),
+        };
+        let mut write_epoch = WriteEpoch::new(Epoch::Application, 0, key, iv);
+        let (encrypted, _) = encrypt_tls13_record(&mut write_epoch, plain).unwrap();
+
+        let mut bad_tag = encrypted.clone();
+        let last = bad_tag.payload.0.len() - 1;
+        bad_tag.payload.0[last] ^= 1;
+        let mut read_epoch = ReadEpoch::new(Epoch::Application, 0, key, iv);
+        assert!(decrypt_tls13_record(&mut read_epoch, bad_tag).is_err());
+        assert_eq!(read_epoch.next_sequence(), 1);
+
+        assert!(decrypt_tls13_record(&mut read_epoch, encrypted).is_err());
+        assert_eq!(read_epoch.next_sequence(), 2);
+    }
+
+    #[test]
+    fn reordered_records_fail_under_their_owned_sequence_numbers() {
+        let key = [0x55u8; 16];
+        let iv = [0x66u8; 12];
+        let make_plain = |body| PlainMessage {
+            typ: ContentType::ApplicationData,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(body),
+        };
+        let mut write_epoch = WriteEpoch::new(Epoch::Application, 0, key, iv);
+        let (first, _) =
+            encrypt_tls13_record(&mut write_epoch, make_plain(b"first".to_vec())).unwrap();
+        let (second, _) =
+            encrypt_tls13_record(&mut write_epoch, make_plain(b"second".to_vec())).unwrap();
+
+        let mut read_epoch = ReadEpoch::new(Epoch::Application, 0, key, iv);
+        assert!(decrypt_tls13_record(&mut read_epoch, second).is_err());
+        assert!(decrypt_tls13_record(&mut read_epoch, first).is_err());
+        assert_eq!(read_epoch.next_sequence(), 2);
+    }
+
+    #[test]
+    fn wrong_epoch_header_is_rejected_without_opening_payload() {
+        let message = OpaqueMessage {
+            typ: ContentType::Handshake,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(vec![0u8; 16]),
+        };
+        let mut read_epoch = ReadEpoch::new(Epoch::Application, 0, [0u8; 16], [0u8; 12]);
+
+        assert!(decrypt_tls13_record(&mut read_epoch, message).is_err());
+        assert_eq!(read_epoch.next_sequence(), 0);
     }
 
     #[test]
