@@ -1,5 +1,15 @@
 # STATUS
 
+## CR-011 — sound TLS 1.3 joint record protection
+
+- [x] Step A: remove complete application-traffic-key decoding and disable the unsound local AEAD path.
+- [x] Step B: introduce typed read/write epochs that exclusively own their sequence numbers.
+- [ ] Implement joint AEAD over secret-shared TLS 1.3 application traffic keys.
+- [ ] Correct the research document's blocker diagnosis and M3 group.
+- [ ] Fix TLS 1.3 interoperability against Caddy and OpenSSL `s_server`.
+- [ ] Cryptographically gate authenticated plaintext release.
+- [ ] Re-enable and pass the focused TLS 1.3 fixture and interoperability tests.
+
 ## CR-001
 
 - [x] Port the upstream TLS 1.3 HKDF/key-schedule groundwork into `crates/components/hmac-sha256` while preserving the current TLS 1.2 public API used by this checkout.

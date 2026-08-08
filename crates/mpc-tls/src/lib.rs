@@ -18,7 +18,9 @@ pub use config::{Config, ConfigBuilder, ConfigBuilderError};
 pub use error::MpcTlsError;
 pub use follower::MpcTlsFollower;
 pub use leader::MpcTlsLeader;
-pub use tls13::{Epoch, Tls13ApplicationKeys, Tls13HandshakeKeys, Tls13SessionKeys};
+pub use tls13::{
+    Epoch, ReadEpoch, Tls13ApplicationKeys, Tls13HandshakeKeys, Tls13SessionKeys, WriteEpoch,
+};
 
 use std::{future::Future, pin::Pin, sync::Arc};
 

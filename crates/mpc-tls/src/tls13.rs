@@ -30,50 +30,122 @@ pub enum Epoch {
     Application,
 }
 
+/// A TLS 1.3 write-key epoch with an exclusively owned record sequence number.
+#[derive(Debug)]
+pub struct WriteEpoch<K, I> {
+    epoch: Epoch,
+    generation: u64,
+    key: K,
+    iv: I,
+    next_sequence: u64,
+}
+
+impl<K, I> WriteEpoch<K, I> {
+    fn new(epoch: Epoch, generation: u64, key: K, iv: I) -> Self {
+        Self {
+            epoch,
+            generation,
+            key,
+            iv,
+            next_sequence: 0,
+        }
+    }
+
+    /// Returns the traffic epoch kind.
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+
+    /// Returns the application-traffic-secret generation.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the sequence number that the next record will consume.
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    fn reserve_sequence(&mut self) -> Result<u64, MpcTlsError> {
+        let sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| MpcTlsError::hs("tls13 write sequence exhausted"))?;
+        Ok(sequence)
+    }
+}
+
+/// A TLS 1.3 read-key epoch with an exclusively owned record sequence number.
+#[derive(Debug)]
+pub struct ReadEpoch<K, I> {
+    epoch: Epoch,
+    generation: u64,
+    key: K,
+    iv: I,
+    next_sequence: u64,
+}
+
+impl<K, I> ReadEpoch<K, I> {
+    fn new(epoch: Epoch, generation: u64, key: K, iv: I) -> Self {
+        Self {
+            epoch,
+            generation,
+            key,
+            iv,
+            next_sequence: 0,
+        }
+    }
+
+    /// Returns the traffic epoch kind.
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
+    }
+
+    /// Returns the application-traffic-secret generation.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Returns the sequence number that the next record will consume.
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    fn reserve_sequence(&mut self) -> Result<u64, MpcTlsError> {
+        let sequence = self.next_sequence;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| MpcTlsError::hs("tls13 read sequence exhausted"))?;
+        Ok(sequence)
+    }
+}
+
 /// TLS 1.3 handshake traffic keys revealed to the leader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Tls13HandshakeKeys {
-    /// The epoch these keys belong to.
-    pub epoch: Epoch,
-    /// Client write key.
-    pub client_write_key: [u8; 16],
-    /// Client write IV.
-    pub client_write_iv: [u8; 12],
+    /// Client-to-server write epoch.
+    pub client: WriteEpoch<[u8; 16], [u8; 12]>,
     /// Client finished key.
     pub client_finished_key: [u8; 32],
-    /// Client sequence number.
-    pub client_sequence: u64,
-    /// Server write key.
-    pub server_write_key: [u8; 16],
-    /// Server write IV.
-    pub server_write_iv: [u8; 12],
+    /// Server-to-client read epoch.
+    pub server: ReadEpoch<[u8; 16], [u8; 12]>,
     /// Server finished key.
     pub server_finished_key: [u8; 32],
-    /// Server sequence number.
-    pub server_sequence: u64,
 }
 
 /// TLS 1.3 application traffic keys kept secret-shared.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Tls13ApplicationKeys {
-    /// The epoch these keys belong to.
-    pub epoch: Epoch,
-    /// Client write key.
-    pub client_write_key: Array<U8, 16>,
-    /// Client write IV.
-    pub client_write_iv: Array<U8, 12>,
-    /// Client sequence number.
-    pub client_sequence: u64,
-    /// Server write key.
-    pub server_write_key: Array<U8, 16>,
-    /// Server write IV.
-    pub server_write_iv: Array<U8, 12>,
-    /// Server sequence number.
-    pub server_sequence: u64,
+    /// Client-to-server write epoch.
+    pub client: WriteEpoch<Array<U8, 16>, Array<U8, 12>>,
+    /// Server-to-client read epoch.
+    pub server: ReadEpoch<Array<U8, 16>, Array<U8, 12>>,
 }
 
 /// TLS 1.3 session key material tracked by MPC-TLS.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Tls13SessionKeys {
     /// Handshake traffic keys revealed to the leader after `ServerHello`.
     pub handshake: Option<Tls13HandshakeKeys>,
@@ -121,15 +193,10 @@ impl Tls13KeyState {
             .handshake_keys()
             .ok()
             .map(|keys| Tls13HandshakeKeys {
-                epoch: Epoch::Handshake,
-                client_write_key: keys.client_write_key,
-                client_write_iv: keys.client_iv,
+                client: WriteEpoch::new(Epoch::Handshake, 0, keys.client_write_key, keys.client_iv),
                 client_finished_key: keys.client_finished_key,
-                client_sequence: 0,
-                server_write_key: keys.server_write_key,
-                server_write_iv: keys.server_iv,
+                server: ReadEpoch::new(Epoch::Handshake, 0, keys.server_write_key, keys.server_iv),
                 server_finished_key: keys.server_finished_key,
-                server_sequence: 0,
             });
 
         self.inner.continue_to_app_keys()?;
@@ -158,13 +225,8 @@ impl Tls13KeyState {
         // records are protected by joint AEAD instead. Anything that needs a
         // plaintext key here is a bug, not a missing feature.
         self.keys.application = Some(Tls13ApplicationKeys {
-            epoch: Epoch::Application,
-            client_write_key: keys.client_write_key,
-            client_write_iv: keys.client_iv,
-            client_sequence: 0,
-            server_write_key: keys.server_write_key,
-            server_write_iv: keys.server_iv,
-            server_sequence: 0,
+            client: WriteEpoch::new(Epoch::Application, 0, keys.client_write_key, keys.client_iv),
+            server: ReadEpoch::new(Epoch::Application, 0, keys.server_write_key, keys.server_iv),
         });
 
         Ok(())
@@ -214,12 +276,7 @@ impl Tls13KeyState {
                     .as_mut()
                     .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
 
-                encrypt_tls13_record(
-                    keys.client_write_key,
-                    keys.client_write_iv,
-                    &mut keys.client_sequence,
-                    msg,
-                )
+                encrypt_tls13_record(&mut keys.client, msg)
             }
             Epoch::Application => Err(MpcTlsError::hs(
                 "tls13 application records require joint AEAD, which is not wired up yet; \
@@ -242,12 +299,7 @@ impl Tls13KeyState {
                     .as_mut()
                     .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
 
-                decrypt_tls13_record(
-                    keys.server_write_key,
-                    keys.server_write_iv,
-                    &mut keys.server_sequence,
-                    msg,
-                )
+                decrypt_tls13_record(&mut keys.server, msg)
             }
             Epoch::Application => Err(MpcTlsError::hs(
                 "tls13 application records require joint AEAD, which is not wired up yet; \
@@ -289,12 +341,9 @@ fn finished_verify_data(
 }
 
 fn encrypt_tls13_record(
-    key: [u8; 16],
-    iv: [u8; 12],
-    sequence: &mut u64,
+    epoch: &mut WriteEpoch<[u8; 16], [u8; 12]>,
     msg: PlainMessage,
 ) -> Result<(OpaqueMessage, Record), MpcTlsError> {
-    let seq = *sequence;
     let typ = msg.typ;
     let plaintext = msg.payload.0;
     let mut payload = plaintext.clone();
@@ -302,13 +351,12 @@ fn encrypt_tls13_record(
 
     let total_len = payload.len() + 16;
     let aad = make_tls13_aad(total_len);
-    let nonce = make_tls13_nonce(iv, seq);
-    *sequence = sequence
-        .checked_add(1)
-        .ok_or_else(|| MpcTlsError::hs("tls13 write sequence overflow"))?;
-
-    let cipher = Aes128Gcm::new_from_slice(&key)
+    let cipher = Aes128Gcm::new_from_slice(&epoch.key)
         .map_err(|_| MpcTlsError::hs("tls13 aes-gcm key initialization failed"))?;
+    // Reserve immediately before invoking AEAD. From this point onward the
+    // (traffic key, sequence) tuple is burned even if encryption fails.
+    let seq = epoch.reserve_sequence()?;
+    let nonce = make_tls13_nonce(epoch.iv, seq);
     let tag = cipher
         .encrypt_in_place_detached((&nonce).into(), &aad, &mut payload)
         .map_err(|_| MpcTlsError::hs("tls13 record encryption failed"))?;
@@ -333,16 +381,13 @@ fn encrypt_tls13_record(
 }
 
 fn decrypt_tls13_record(
-    key: [u8; 16],
-    iv: [u8; 12],
-    sequence: &mut u64,
+    epoch: &mut ReadEpoch<[u8; 16], [u8; 12]>,
     msg: OpaqueMessage,
 ) -> Result<(PlainMessage, Record), MpcTlsError> {
     if msg.typ != ContentType::ApplicationData || msg.version != ProtocolVersion::TLSv1_2 {
         return Err(MpcTlsError::hs("unexpected TLS 1.3 record header"));
     }
 
-    let seq = *sequence;
     let payload_bytes = msg.payload.0;
     let mut payload = payload_bytes;
     if payload.len() < 16 {
@@ -354,13 +399,12 @@ fn decrypt_tls13_record(
     let tag = payload.split_off(payload.len() - 16);
     let ciphertext = payload.clone();
     let aad = make_tls13_aad(payload.len() + 16);
-    let nonce = make_tls13_nonce(iv, seq);
-    *sequence = sequence
-        .checked_add(1)
-        .ok_or_else(|| MpcTlsError::hs("tls13 read sequence overflow"))?;
-
-    let cipher = Aes128Gcm::new_from_slice(&key)
+    let cipher = Aes128Gcm::new_from_slice(&epoch.key)
         .map_err(|_| MpcTlsError::hs("tls13 aes-gcm key initialization failed"))?;
+    // Authentication consumes the peer's record number even on failure. A
+    // failed record is fatal to the TLS connection and must never be retried.
+    let seq = epoch.reserve_sequence()?;
+    let nonce = make_tls13_nonce(epoch.iv, seq);
     cipher
         .decrypt_in_place_detached((&nonce).into(), &aad, &mut payload, tag.as_slice().into())
         .map_err(|_| MpcTlsError::hs("tls13 record authentication failed"))?;
@@ -424,7 +468,7 @@ fn unpad_tls13(payload: &mut Vec<u8>) -> Result<ContentType, MpcTlsError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decrypt_tls13_record, encrypt_tls13_record, Tls13KeyState};
+    use super::{decrypt_tls13_record, encrypt_tls13_record, ReadEpoch, Tls13KeyState, WriteEpoch};
     use crate::{Epoch, Role};
     use hmac_sha256::Mode;
     use mpz_common::{context::test_st_context, Context};
@@ -520,12 +564,14 @@ mod tests {
         let handshake = leader
             .session_keys()
             .handshake
+            .as_ref()
             .expect("leader should learn handshake keys");
-        assert_eq!(handshake.epoch, Epoch::Handshake);
-        assert_eq!(handshake.client_write_key, ckey_hs);
-        assert_eq!(handshake.client_write_iv, civ_hs);
-        assert_eq!(handshake.server_write_key, skey_hs);
-        assert_eq!(handshake.server_write_iv, siv_hs);
+        assert_eq!(handshake.client.epoch(), Epoch::Handshake);
+        assert_eq!(handshake.client.key, ckey_hs);
+        assert_eq!(handshake.client.iv, civ_hs);
+        assert_eq!(handshake.server.epoch(), Epoch::Handshake);
+        assert_eq!(handshake.server.key, skey_hs);
+        assert_eq!(handshake.server.iv, siv_hs);
         assert_ne!(handshake.client_finished_key, [0u8; 32]);
         assert_ne!(handshake.server_finished_key, [0u8; 32]);
 
@@ -545,14 +591,14 @@ mod tests {
             .as_ref()
             .expect("application keys should be set");
 
-        let mut leader_ckey = leader_vm.decode(leader_keys.client_write_key).unwrap();
-        let mut leader_civ = leader_vm.decode(leader_keys.client_write_iv).unwrap();
-        let mut leader_skey = leader_vm.decode(leader_keys.server_write_key).unwrap();
-        let mut leader_siv = leader_vm.decode(leader_keys.server_write_iv).unwrap();
-        let mut follower_ckey = follower_vm.decode(follower_keys.client_write_key).unwrap();
-        let mut follower_civ = follower_vm.decode(follower_keys.client_write_iv).unwrap();
-        let mut follower_skey = follower_vm.decode(follower_keys.server_write_key).unwrap();
-        let mut follower_siv = follower_vm.decode(follower_keys.server_write_iv).unwrap();
+        let mut leader_ckey = leader_vm.decode(leader_keys.client.key).unwrap();
+        let mut leader_civ = leader_vm.decode(leader_keys.client.iv).unwrap();
+        let mut leader_skey = leader_vm.decode(leader_keys.server.key).unwrap();
+        let mut leader_siv = leader_vm.decode(leader_keys.server.iv).unwrap();
+        let mut follower_ckey = follower_vm.decode(follower_keys.client.key).unwrap();
+        let mut follower_civ = follower_vm.decode(follower_keys.client.iv).unwrap();
+        let mut follower_skey = follower_vm.decode(follower_keys.server.key).unwrap();
+        let mut follower_siv = follower_vm.decode(follower_keys.server.iv).unwrap();
 
         tokio::try_join!(
             leader_vm.execute_all(&mut ctx_a),
@@ -560,7 +606,8 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(leader_keys.epoch, Epoch::Application);
+        assert_eq!(leader_keys.client.epoch(), Epoch::Application);
+        assert_eq!(leader_keys.server.epoch(), Epoch::Application);
         assert_eq!(leader_ckey.try_recv().unwrap().unwrap(), ckey_app,);
         assert_eq!(leader_civ.try_recv().unwrap().unwrap(), civ_app,);
         assert_eq!(leader_skey.try_recv().unwrap().unwrap(), skey_app,);
@@ -585,20 +632,50 @@ mod tests {
             payload: Payload::new(b"hello tls13".to_vec()),
         };
 
-        let mut write_seq = 0;
-        let (encrypted, record) =
-            encrypt_tls13_record(key, iv, &mut write_seq, plain.clone()).unwrap();
+        let mut write_epoch = WriteEpoch::new(Epoch::Application, 0, key, iv);
+        let (encrypted, record) = encrypt_tls13_record(&mut write_epoch, plain.clone()).unwrap();
         assert_eq!(encrypted.typ, ContentType::ApplicationData);
         assert_eq!(encrypted.version, ProtocolVersion::TLSv1_2);
         assert_eq!(record.typ, TranscriptContentType::ApplicationData);
 
-        let mut read_seq = 0;
+        let mut read_epoch = ReadEpoch::new(Epoch::Application, 0, key, iv);
         let (decrypted, decrypted_record) =
-            decrypt_tls13_record(key, iv, &mut read_seq, encrypted).unwrap();
+            decrypt_tls13_record(&mut read_epoch, encrypted).unwrap();
         assert_eq!(decrypted.typ, plain.typ);
         assert_eq!(decrypted.version, ProtocolVersion::TLSv1_3);
         assert_eq!(decrypted.payload.0, plain.payload.0);
         assert_eq!(decrypted_record.typ, TranscriptContentType::ApplicationData);
+        assert_eq!(write_epoch.next_sequence(), 1);
+        assert_eq!(read_epoch.next_sequence(), 1);
+    }
+
+    #[test]
+    fn directional_epochs_own_independent_sequences_and_reset_on_install() {
+        let mut write = WriteEpoch::new(Epoch::Application, 0, [1u8; 16], [2u8; 12]);
+        let mut read = ReadEpoch::new(Epoch::Application, 0, [3u8; 16], [4u8; 12]);
+
+        assert_eq!(write.reserve_sequence().unwrap(), 0);
+        assert_eq!(write.reserve_sequence().unwrap(), 1);
+        assert_eq!(read.reserve_sequence().unwrap(), 0);
+        assert_eq!(write.next_sequence(), 2);
+        assert_eq!(read.next_sequence(), 1);
+
+        let replacement = WriteEpoch::new(Epoch::Application, 1, [5u8; 16], [6u8; 12]);
+        assert_eq!(replacement.generation(), 1);
+        assert_eq!(replacement.next_sequence(), 0);
+    }
+
+    #[test]
+    fn directional_epochs_reject_sequence_wrap() {
+        let mut write = WriteEpoch::new(Epoch::Application, 0, [1u8; 16], [2u8; 12]);
+        write.next_sequence = u64::MAX;
+        assert!(write.reserve_sequence().is_err());
+        assert_eq!(write.next_sequence(), u64::MAX);
+
+        let mut read = ReadEpoch::new(Epoch::Application, 0, [3u8; 16], [4u8; 12]);
+        read.next_sequence = u64::MAX;
+        assert!(read.reserve_sequence().is_err());
+        assert_eq!(read.next_sequence(), u64::MAX);
     }
 
     #[allow(clippy::type_complexity)]
