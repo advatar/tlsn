@@ -79,6 +79,7 @@ pub(crate) struct RecordLayer {
     encrypter: Arc<Mutex<MpcAesGcm>>,
     decrypt: Arc<Mutex<MpcAesGcm>>,
     aes_gcm: AesGcm,
+    tls13_key_inputs: Option<(SharedKeyInput, SharedKeyInput)>,
     state: State,
     /// Whether the record layer has started processing application data.
     started: bool,
@@ -111,6 +112,7 @@ impl RecordLayer {
             encrypter: Arc::new(Mutex::new(encrypt)),
             decrypt: Arc::new(Mutex::new(decrypt)),
             aes_gcm: AesGcm::new(role),
+            tls13_key_inputs: None,
             state: State::Init,
             started: false,
             sent: 0,
@@ -169,6 +171,16 @@ impl RecordLayer {
             .alloc(vm, recv_records, recv_len_online)
             .map_err(MpcTlsError::record_layer)?;
 
+        let (client_input, client_key) = alloc_shared_key(vm, self.role)?;
+        let (server_input, server_key) = alloc_shared_key(vm, self.role)?;
+        encrypt
+            .prepare_tls13_key(vm, client_key)
+            .map_err(MpcTlsError::record_layer)?;
+        decrypt
+            .prepare_tls13_key(vm, server_key)
+            .map_err(MpcTlsError::record_layer)?;
+        self.tls13_key_inputs = Some((client_input, server_input));
+
         let recv_otp = match self.role {
             Role::Leader => {
                 let mut recv_otp = vec![0u8; recv_len_online];
@@ -200,18 +212,12 @@ impl RecordLayer {
         client_share: [u8; 16],
         server_share: [u8; 16],
     ) -> Result<(), MpcTlsError> {
-        let client_key = alloc_shared_key(vm, self.role, client_share)?;
-        let server_key = alloc_shared_key(vm, self.role, server_share)?;
-        self.encrypter
-            .try_lock()
-            .map_err(|_| MpcTlsError::other("encrypt lock is held"))?
-            .prepare_tls13_key(vm, client_key)
-            .map_err(MpcTlsError::record_layer)?;
-        self.decrypt
-            .try_lock()
-            .map_err(|_| MpcTlsError::other("decrypt lock is held"))?
-            .prepare_tls13_key(vm, server_key)
-            .map_err(MpcTlsError::record_layer)
+        let (client_input, server_input) = self
+            .tls13_key_inputs
+            .take()
+            .ok_or_else(|| MpcTlsError::record_layer("TLS 1.3 keys were already installed"))?;
+        client_input.assign(vm, self.role, client_share)?;
+        server_input.assign(vm, self.role, server_share)
     }
 
     pub(crate) async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), MpcTlsError> {
@@ -338,6 +344,7 @@ impl RecordLayer {
         let compute_tag = encrypter
             .compute_tag_tls13(&mut *vm, nonce, tag_output, aad)
             .map_err(MpcTlsError::record_layer)?;
+        vm.flush(ctx).await.map_err(MpcTlsError::record_layer)?;
 
         let (tags, _) = ctx
             .try_join(
@@ -404,6 +411,7 @@ impl RecordLayer {
         let verify_tag = decrypter
             .verify_tag_tls13(&mut *vm, nonce, ciphertext.clone(), aad, tag)
             .map_err(MpcTlsError::record_layer)?;
+        vm.flush(ctx).await.map_err(MpcTlsError::record_layer)?;
 
         let (verified, _) = ctx
             .try_join(
@@ -772,30 +780,45 @@ impl RecordLayer {
     }
 }
 
+struct SharedKeyInput {
+    leader: Array<U8, 16>,
+    follower: Array<U8, 16>,
+}
+
+impl SharedKeyInput {
+    fn assign(
+        self,
+        vm: &mut dyn VmTrait<Binary>,
+        role: Role,
+        share: [u8; 16],
+    ) -> Result<(), MpcTlsError> {
+        match role {
+            Role::Leader => vm.assign(self.leader, share),
+            Role::Follower => vm.assign(self.follower, share),
+        }
+        .map_err(MpcTlsError::record_layer)?;
+        vm.commit(self.leader).map_err(MpcTlsError::record_layer)?;
+        vm.commit(self.follower).map_err(MpcTlsError::record_layer)
+    }
+}
+
 fn alloc_shared_key(
     vm: &mut dyn VmTrait<Binary>,
     role: Role,
-    share: [u8; 16],
-) -> Result<Array<U8, 16>, MpcTlsError> {
+) -> Result<(SharedKeyInput, Array<U8, 16>), MpcTlsError> {
     let leader: Array<U8, 16> = vm.alloc().map_err(MpcTlsError::record_layer)?;
     let follower: Array<U8, 16> = vm.alloc().map_err(MpcTlsError::record_layer)?;
     match role {
         Role::Leader => {
             vm.mark_private(leader).map_err(MpcTlsError::record_layer)?;
-            vm.assign(leader, share)
-                .map_err(MpcTlsError::record_layer)?;
             vm.mark_blind(follower).map_err(MpcTlsError::record_layer)?;
         }
         Role::Follower => {
             vm.mark_blind(leader).map_err(MpcTlsError::record_layer)?;
             vm.mark_private(follower)
                 .map_err(MpcTlsError::record_layer)?;
-            vm.assign(follower, share)
-                .map_err(MpcTlsError::record_layer)?;
         }
     }
-    vm.commit(leader).map_err(MpcTlsError::record_layer)?;
-    vm.commit(follower).map_err(MpcTlsError::record_layer)?;
     let output: Vector<U8> = vm
         .call(
             CallBuilder::new(Arc::new(xor(128)))
@@ -805,9 +828,10 @@ fn alloc_shared_key(
                 .map_err(MpcTlsError::record_layer)?,
         )
         .map_err(MpcTlsError::record_layer)?;
-    output
+    let output = output
         .try_into()
-        .map_err(|_| MpcTlsError::record_layer("shared TLS 1.3 key is not 16 bytes"))
+        .map_err(|_| MpcTlsError::record_layer("shared TLS 1.3 key is not 16 bytes"))?;
+    Ok((SharedKeyInput { leader, follower }, output))
 }
 
 #[derive(Clone)]

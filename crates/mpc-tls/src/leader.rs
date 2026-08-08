@@ -846,7 +846,9 @@ impl Backend for MpcTlsLeader {
                 .await
                 .map_err(MpcTlsError::hs)?;
             record_layer.prepare_tls13_keys(&mut *vm, client_share, server_share)?;
+            debug!("TLS 1.3 application key shares assigned to record layer");
             vm.execute_all(ctx).await.map_err(MpcTlsError::hs)?;
+            debug!("TLS 1.3 application key-install circuits executed");
             drop(vm);
             record_layer.setup(ctx).await?;
             debug!("TLS 1.3 application record layer is ready");

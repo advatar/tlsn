@@ -408,9 +408,11 @@ impl MpcTlsFollower {
                         .set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash)
                         .await?;
                     record_layer.prepare_tls13_keys(&mut *vm, client_share, server_share)?;
+                    debug!("TLS 1.3 application key shares assigned to record layer");
                     vm.execute_all(&mut self.ctx)
                         .await
                         .map_err(MpcTlsError::hs)?;
+                    debug!("TLS 1.3 application key-install circuits executed");
                     drop(vm);
                     record_layer.setup(&mut self.ctx).await?;
                     debug!("TLS 1.3 application record layer is ready");

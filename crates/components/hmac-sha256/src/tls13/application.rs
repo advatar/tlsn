@@ -208,6 +208,39 @@ impl ApplicationSecrets {
         }
     }
 
+    pub(crate) fn allocated_keys(&self) -> ApplicationKeys {
+        ApplicationKeys {
+            client_write_key: self
+                .client_application_key
+                .as_ref()
+                .expect("application keys are allocated")
+                .output()
+                .try_into()
+                .expect("key length is 16 bytes"),
+            client_iv: self
+                .client_application_iv
+                .as_ref()
+                .expect("application IVs are allocated")
+                .output()
+                .try_into()
+                .expect("iv length is 12 bytes"),
+            server_write_key: self
+                .server_application_key
+                .as_ref()
+                .expect("application keys are allocated")
+                .output()
+                .try_into()
+                .expect("key length is 16 bytes"),
+            server_iv: self
+                .server_application_iv
+                .as_ref()
+                .expect("application IVs are allocated")
+                .output()
+                .try_into()
+                .expect("iv length is 12 bytes"),
+        }
+    }
+
     /// Whether this functionality is complete.
     pub(crate) fn is_complete(&self) -> bool {
         matches!(self.state, State::Complete { .. })

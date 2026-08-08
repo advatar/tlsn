@@ -18,7 +18,7 @@ use tls_core::msgs::{
 use tlsn_core::transcript::{ContentType as TranscriptContentType, Record};
 use tracing::debug;
 
-use crate::{decode::OneTimePadShared, record_layer::RecordLayer, MpcTlsError, Role, Vm};
+use crate::{record_layer::RecordLayer, MpcTlsError, Role, Vm};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -155,7 +155,6 @@ pub struct Tls13SessionKeys {
 }
 
 pub(crate) struct Tls13KeyState {
-    role: Role,
     inner: Tls13KeySched,
     keys: Tls13SessionKeys,
 }
@@ -168,7 +167,6 @@ impl Tls13KeyState {
         };
 
         Self {
-            role,
             inner: Tls13KeySched::new(mode, key_schedule_role),
             keys: Tls13SessionKeys::default(),
         }
@@ -219,11 +217,7 @@ impl Tls13KeyState {
         debug!("TLS 1.3 key schedule application outputs complete");
 
         let keys = self.inner.application_keys()?;
-        let mut client_share =
-            OneTimePadShared::new(self.role, keys.client_write_key, vm).map_err(MpcTlsError::hs)?;
-        let mut server_share =
-            OneTimePadShared::new(self.role, keys.server_write_key, vm).map_err(MpcTlsError::hs)?;
-        vm.execute_all(ctx).await.map_err(MpcTlsError::hs)?;
+        let key_shares = self.inner.application_key_shares()?;
         debug!("TLS 1.3 application key shares exported");
 
         // The application traffic keys are deliberately NOT decoded. They were,
@@ -239,10 +233,7 @@ impl Tls13KeyState {
             server: ReadEpoch::new(Epoch::Application, 0, keys.server_write_key, keys.server_iv),
         });
 
-        Ok((
-            (&mut client_share).await.map_err(MpcTlsError::hs)?,
-            (&mut server_share).await.map_err(MpcTlsError::hs)?,
-        ))
+        Ok(key_shares)
     }
 
     #[allow(dead_code)]
