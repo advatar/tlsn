@@ -3,8 +3,8 @@ use crate::{
     msg::{
         ClientFinishedVd, Decrypt, Encrypt, Message, ServerFinishedVd, SetClientRandom,
         SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake, Tls13CertVerify,
-        Tls13ClientFinishedVd, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
-        Tls13ServerFinishedVd,
+        Tls13ClientFinishedVd, Tls13DecryptApplication, Tls13EncryptApplication,
+        Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
     },
     record_layer::{
         aead::MpcAesGcm, DecryptMode as RecordDecryptMode, EncryptMode as RecordEncryptMode,
@@ -821,6 +821,7 @@ impl Backend for MpcTlsLeader {
             ctx,
             vm,
             tls13,
+            record_layer,
             protocol_version,
             ..
         } = &mut self.state
@@ -829,6 +830,7 @@ impl Backend for MpcTlsLeader {
         };
 
         if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
+            debug!("setting TLS 1.3 application handshake hash");
             ctx.io_mut()
                 .send(Message::Tls13HandshakeHash(Tls13HandshakeHash {
                     handshake_hash: hash,
@@ -839,10 +841,15 @@ impl Backend for MpcTlsLeader {
             let mut vm = vm
                 .try_lock()
                 .map_err(|_| MpcTlsError::hs("VM lock is held"))?;
-            tls13
+            let (client_share, server_share) = tls13
                 .set_handshake_hash(ctx, &mut *vm, hash)
                 .await
                 .map_err(MpcTlsError::hs)?;
+            record_layer.prepare_tls13_keys(&mut *vm, client_share, server_share)?;
+            vm.execute_all(ctx).await.map_err(MpcTlsError::hs)?;
+            drop(vm);
+            record_layer.setup(ctx).await?;
+            debug!("TLS 1.3 application record layer is ready");
         }
 
         Ok(())
@@ -872,6 +879,7 @@ impl Backend for MpcTlsLeader {
         };
 
         if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
+            debug!("setting TLS 1.3 hello hash");
             ctx.io_mut()
                 .send(Message::Tls13HelloHash(Tls13HelloHash { hello_hash: hash }))
                 .await
@@ -884,6 +892,8 @@ impl Backend for MpcTlsLeader {
                 .set_hello_hash(ctx, &mut *vm, hash)
                 .await
                 .map_err(MpcTlsError::hs)?;
+            debug!("TLS 1.3 application AEAD circuits preallocated");
+            debug!("TLS 1.3 hello hash set");
         }
 
         Ok(())
@@ -1264,9 +1274,38 @@ impl Backend for MpcTlsLeader {
             })?;
 
             let (plain, record) = match &mut self.state {
-                State::Handshake { tls13, .. } | State::Active { tls13, .. } => {
-                    tls13.decrypt_record(epoch, msg).map_err(MpcTlsError::hs)?
+                State::Handshake {
+                    ctx,
+                    vm,
+                    tls13,
+                    record_layer,
+                    ..
                 }
+                | State::Active {
+                    ctx,
+                    vm,
+                    tls13,
+                    record_layer,
+                    ..
+                } => match epoch {
+                    Epoch::Handshake => tls13.decrypt_record(epoch, msg)?,
+                    Epoch::Application => {
+                        ctx.io_mut()
+                            .send(Message::Tls13DecryptApplication(Tls13DecryptApplication {
+                                typ: msg.typ,
+                                version: msg.version,
+                                payload: msg.payload.0.clone(),
+                            }))
+                            .await
+                            .map_err(MpcTlsError::from)?;
+                        tls13
+                            .decrypt_application_record(ctx, vm.clone(), record_layer, msg)
+                            .await?
+                            .ok_or_else(|| {
+                                MpcTlsError::hs("leader did not receive TLS 1.3 plaintext")
+                            })?
+                    }
+                },
                 _ => {
                     return Err(MpcTlsError::state(format!(
                         "can not decrypt tls13 record in state: {}",
@@ -1338,20 +1377,48 @@ impl Backend for MpcTlsLeader {
         match &mut self.state {
             State::Handshake {
                 ctx,
+                vm,
                 tls13,
+                record_layer,
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             }
             | State::Active {
                 ctx,
+                vm,
                 tls13,
+                record_layer,
                 protocol_version: ProtocolVersion::TLSv1_3,
                 ..
             } => {
                 let epoch = self.tls13_encrypt_epoch.ok_or_else(|| {
                     MpcTlsError::hs("tls13 encrypt epoch was not configured before encryption")
                 })?;
-                let (opaque, record) = tls13.encrypt_record(epoch, msg).map_err(MpcTlsError::hs)?;
+                let (opaque, record) = match epoch {
+                    Epoch::Handshake => tls13.encrypt_record(epoch, msg)?,
+                    Epoch::Application => {
+                        ctx.io_mut()
+                            .send(Message::Tls13EncryptApplication(Tls13EncryptApplication {
+                                typ: msg.typ,
+                                plaintext_len: msg.payload.0.len(),
+                            }))
+                            .await
+                            .map_err(MpcTlsError::from)?;
+                        tls13
+                            .encrypt_application_record(
+                                ctx,
+                                vm.clone(),
+                                record_layer,
+                                msg.typ,
+                                Some(msg.payload.0.clone()),
+                                msg.payload.0.len(),
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                MpcTlsError::hs("leader did not receive TLS 1.3 ciphertext tag")
+                            })?
+                    }
+                };
                 ctx.io_mut()
                     .send(Message::Tls13SendRecord(Tls13RecordMessage {
                         record: record.clone(),

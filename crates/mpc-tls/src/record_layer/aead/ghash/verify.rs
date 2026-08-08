@@ -27,6 +27,7 @@ pub(crate) struct VerifyTags {
     data: Vec<VerifyTagData>,
     /// MPC implementation to use for computing GHASH.
     ghash: Arc<dyn Ghash + Send + Sync>,
+    key_index: usize,
 }
 
 impl VerifyTags {
@@ -34,8 +35,14 @@ impl VerifyTags {
         role: Role,
         data: Vec<VerifyTagData>,
         ghash: Arc<dyn Ghash + Send + Sync>,
+        key_index: usize,
     ) -> Self {
-        Self { role, data, ghash }
+        Self {
+            role,
+            data,
+            ghash,
+            key_index,
+        }
     }
 }
 
@@ -48,6 +55,7 @@ impl Task for VerifyTags {
             role,
             mut data,
             ghash,
+            key_index,
         } = self;
 
         if data.is_empty() {
@@ -67,7 +75,7 @@ impl Task for VerifyTags {
 
         for (mut tag_share, data) in j0_shares.into_iter().zip(data) {
             let ghash_share = ghash
-                .compute(&build_ghash_data(data.aad, data.ciphertext))
+                .compute(key_index, &build_ghash_data(data.aad, data.ciphertext))
                 .map_err(AeadError::tag)?;
             tag_share
                 .iter_mut()

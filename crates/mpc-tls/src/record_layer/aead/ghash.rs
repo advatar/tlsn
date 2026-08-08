@@ -21,19 +21,19 @@ const MAX_POWER: usize = 1026;
 #[async_trait]
 pub(crate) trait Ghash {
     /// Allocates resources needed for GHASH.
-    fn alloc(&mut self) -> Result<(), GhashError>;
+    fn alloc(&mut self, keys: usize) -> Result<(), GhashError>;
 
     /// Preprocesses GHASH.
     async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), GhashError>;
 
     /// Sets the additive key share for the hash function.
-    fn set_key(&mut self, key: Vec<u8>) -> Result<(), GhashError>;
+    fn set_keys(&mut self, keys: Vec<Vec<u8>>) -> Result<(), GhashError>;
 
     /// Sets up GHASH, computing the key shares.
     async fn setup(&mut self, ctx: &mut Context) -> Result<(), GhashError>;
 
     /// Computes the GHASH tag share.
-    fn compute(&self, input: &[u8]) -> Result<Vec<u8>, GhashError>;
+    fn compute(&self, key_index: usize, input: &[u8]) -> Result<Vec<u8>, GhashError>;
 }
 
 /// MPC GHASH implementation.
@@ -46,8 +46,8 @@ pub(crate) struct MpcGhash<C> {
 #[derive(Debug)]
 enum State {
     Init,
-    SetKey { key: Gf2_128 },
-    Ready { shares: Vec<Gf2_128> },
+    SetKeys { keys: Vec<Gf2_128> },
+    Ready { shares: Vec<Vec<Gf2_128>> },
     Error,
 }
 
@@ -78,17 +78,20 @@ where
     C: AdditiveToMultiplicative<Gf2_128> + Flush + Send,
     C: MultiplicativeToAdditive<Gf2_128> + Flush + Send,
 {
-    fn alloc(&mut self) -> Result<(), GhashError> {
+    fn alloc(&mut self, keys: usize) -> Result<(), GhashError> {
         if !self.alloc {
             // Odd powers are computed using M2A, even powers are computed
             // locally. We need one extra A2M conversion in the beginning.
             // Both M2A and A2M, each require a single OLE.
-            AdditiveToMultiplicative::<Gf2_128>::alloc(&mut self.converter, 1)
+            AdditiveToMultiplicative::<Gf2_128>::alloc(&mut self.converter, keys)
                 .map_err(GhashError::conversion)?;
 
             // -1 because the odd power H^1 is already known at this point.
-            MultiplicativeToAdditive::<Gf2_128>::alloc(&mut self.converter, (MAX_POWER / 2) - 1)
-                .map_err(GhashError::conversion)?;
+            MultiplicativeToAdditive::<Gf2_128>::alloc(
+                &mut self.converter,
+                keys * ((MAX_POWER / 2) - 1),
+            )
+            .map_err(GhashError::conversion)?;
 
             self.alloc = true;
         }
@@ -103,38 +106,37 @@ where
             .map_err(GhashError::conversion)
     }
 
-    fn set_key(&mut self, key: Vec<u8>) -> Result<(), GhashError> {
-        if key.len() != 16 {
-            return Err(ErrorRepr::KeyLength {
-                expected: 16,
-                actual: key.len(),
-            }
-            .into());
-        }
-
+    fn set_keys(&mut self, keys: Vec<Vec<u8>>) -> Result<(), GhashError> {
         let State::Init = self.state.take() else {
-            return Err(GhashError::state("Key already set"));
+            return Err(GhashError::state("keys already set"));
         };
 
-        let mut h_additive = [0u8; 16];
-        h_additive.copy_from_slice(key.as_slice());
+        let keys = keys
+            .into_iter()
+            .map(|key| {
+                let key: [u8; 16] =
+                    key.try_into()
+                        .map_err(|key: Vec<u8>| ErrorRepr::KeyLength {
+                            expected: 16,
+                            actual: key.len(),
+                        })?;
+                Ok(Gf2_128::new(u128::from_be_bytes(key).reverse_bits()))
+            })
+            .collect::<Result<Vec<_>, GhashError>>()?;
 
-        // GHASH reflects the bits of the key.
-        let h_additive = Gf2_128::new(u128::from_be_bytes(h_additive).reverse_bits());
-
-        self.state = State::SetKey { key: h_additive };
+        self.state = State::SetKeys { keys };
 
         Ok(())
     }
 
     async fn setup(&mut self, ctx: &mut Context) -> Result<(), GhashError> {
-        let State::SetKey { key: add_key } = self.state.take() else {
-            return Err(GhashError::state("cannot setup before key is set"));
+        let State::SetKeys { keys: add_keys } = self.state.take() else {
+            return Err(GhashError::state("cannot setup before keys are set"));
         };
 
         let mut mult_key = self
             .converter
-            .queue_to_multiplicative(&[add_key])
+            .queue_to_multiplicative(&add_keys)
             .map_err(GhashError::conversion)?;
 
         self.converter
@@ -142,26 +144,25 @@ where
             .await
             .map_err(GhashError::conversion)?;
 
-        let mult_key = mult_key
+        let mult_keys = mult_key
             .try_recv()
             .map_err(GhashError::conversion)?
             .expect("share should be computed")
-            .shares[0];
+            .shares;
 
-        // Compute the odd powers of the multiplicative key share.
-        //
-        // Resulting vector contains odd powers of H from H^3 to H^1025.
-        let odd_shares: Vec<_> = (0..MAX_POWER)
-            .scan(mult_key, |acc, _| {
-                let power_n = *acc;
-                *acc = power_n * mult_key;
-                Some(power_n)
+        let odd_shares = mult_keys
+            .iter()
+            .flat_map(|mult_key| {
+                (0..MAX_POWER)
+                    .scan(*mult_key, |acc, _| {
+                        let power_n = *acc;
+                        *acc = power_n * *mult_key;
+                        Some(power_n)
+                    })
+                    .skip(2)
+                    .step_by(2)
             })
-            // Start from H^3.
-            .skip(2)
-            // Skip even powers.
-            .step_by(2)
-            .collect();
+            .collect::<Vec<_>>();
 
         // Compute the additive shares of the odd powers.
         let mut add_shares_odd = self
@@ -180,17 +181,25 @@ where
             .expect("share should be computed")
             .shares;
 
-        let shares = compute_shares(add_key, &add_shares_odd);
+        let odd_count = (MAX_POWER / 2) - 1;
+        let shares = add_keys
+            .into_iter()
+            .zip(add_shares_odd.chunks_exact(odd_count))
+            .map(|(key, odd)| compute_shares(key, odd))
+            .collect();
 
         self.state = State::Ready { shares };
 
         Ok(())
     }
 
-    fn compute(&self, input: &[u8]) -> Result<Vec<u8>, GhashError> {
+    fn compute(&self, key_index: usize, input: &[u8]) -> Result<Vec<u8>, GhashError> {
         let State::Ready { shares } = &self.state else {
             return Err(GhashError::state("key shares are not computed"));
         };
+        let shares = shares
+            .get(key_index)
+            .ok_or_else(|| GhashError::state("GHASH key index is not configured"))?;
 
         // Divide by block length and round up.
         let block_count = input.len() / 16 + !input.len().is_multiple_of(16) as usize;
@@ -355,8 +364,8 @@ mod tests {
         let (convert_a, convert_b) = ideal_share_convert(Block::ZERO);
 
         let (mut sender, mut receiver) = (MpcGhash::new(convert_a), MpcGhash::new(convert_b));
-        sender.alloc().unwrap();
-        receiver.alloc().unwrap();
+        sender.alloc(1).unwrap();
+        receiver.alloc(1).unwrap();
 
         (sender, receiver)
     }
@@ -397,15 +406,17 @@ mod tests {
         let message: Vec<u8> = (0..16).map(|_| rng.random()).collect();
 
         let (mut sender, mut receiver) = create_pair();
-        sender.set_key(sender_key.to_be_bytes().to_vec()).unwrap();
+        sender
+            .set_keys(vec![sender_key.to_be_bytes().to_vec()])
+            .unwrap();
         receiver
-            .set_key(receiver_key.to_be_bytes().to_vec())
+            .set_keys(vec![receiver_key.to_be_bytes().to_vec()])
             .unwrap();
 
         tokio::try_join!(sender.setup(&mut ctx_a), receiver.setup(&mut ctx_b)).unwrap();
 
-        let sender_share = sender.compute(&message).unwrap();
-        let receiver_share = receiver.compute(&message).unwrap();
+        let sender_share = sender.compute(0, &message).unwrap();
+        let receiver_share = receiver.compute(0, &message).unwrap();
 
         let tag = sender_share
             .iter()
@@ -429,15 +440,17 @@ mod tests {
 
         let (mut sender, mut receiver) = create_pair();
 
-        sender.set_key(sender_key.to_be_bytes().to_vec()).unwrap();
+        sender
+            .set_keys(vec![sender_key.to_be_bytes().to_vec()])
+            .unwrap();
         receiver
-            .set_key(receiver_key.to_be_bytes().to_vec())
+            .set_keys(vec![receiver_key.to_be_bytes().to_vec()])
             .unwrap();
 
         tokio::try_join!(sender.setup(&mut ctx_a), receiver.setup(&mut ctx_b)).unwrap();
 
-        let sender_share = sender.compute(&message).unwrap();
-        let receiver_share = receiver.compute(&message).unwrap();
+        let sender_share = sender.compute(0, &message).unwrap();
+        let receiver_share = receiver.compute(0, &message).unwrap();
 
         let tag = sender_share
             .iter()
@@ -461,15 +474,17 @@ mod tests {
 
         let (mut sender, mut receiver) = create_pair();
 
-        sender.set_key(sender_key.to_be_bytes().to_vec()).unwrap();
+        sender
+            .set_keys(vec![sender_key.to_be_bytes().to_vec()])
+            .unwrap();
         receiver
-            .set_key(receiver_key.to_be_bytes().to_vec())
+            .set_keys(vec![receiver_key.to_be_bytes().to_vec()])
             .unwrap();
 
         tokio::try_join!(sender.setup(&mut ctx_a), receiver.setup(&mut ctx_b)).unwrap();
 
-        let sender_share = sender.compute(&long_message).unwrap();
-        let receiver_share = receiver.compute(&long_message).unwrap();
+        let sender_share = sender.compute(0, &long_message).unwrap();
+        let receiver_share = receiver.compute(0, &long_message).unwrap();
 
         let tag = sender_share
             .iter()
@@ -494,16 +509,18 @@ mod tests {
 
         let (mut sender, mut receiver) = create_pair();
 
-        sender.set_key(sender_key.to_be_bytes().to_vec()).unwrap();
+        sender
+            .set_keys(vec![sender_key.to_be_bytes().to_vec()])
+            .unwrap();
         receiver
-            .set_key(receiver_key.to_be_bytes().to_vec())
+            .set_keys(vec![receiver_key.to_be_bytes().to_vec()])
             .unwrap();
 
         tokio::try_join!(sender.setup(&mut ctx_a), receiver.setup(&mut ctx_b)).unwrap();
 
         // Compute and check first message.
-        let sender_share = sender.compute(&first_message).unwrap();
-        let receiver_share = receiver.compute(&first_message).unwrap();
+        let sender_share = sender.compute(0, &first_message).unwrap();
+        let receiver_share = receiver.compute(0, &first_message).unwrap();
 
         let tag = sender_share
             .iter()
@@ -514,8 +531,8 @@ mod tests {
         assert_eq!(tag, ghash_reference_impl(h, &first_message));
 
         // Compute and check second message.
-        let sender_share = sender.compute(&second_message).unwrap();
-        let receiver_share = receiver.compute(&second_message).unwrap();
+        let sender_share = sender.compute(0, &second_message).unwrap();
+        let receiver_share = receiver.compute(0, &second_message).unwrap();
 
         let tag = sender_share
             .iter()

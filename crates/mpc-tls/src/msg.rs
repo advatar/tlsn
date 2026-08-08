@@ -24,6 +24,8 @@ pub(crate) enum Message {
     Tls13ServerFinishedVd(Tls13ServerFinishedVd),
     Tls13SendRecord(Tls13RecordMessage),
     Tls13RecvRecord(Tls13RecordMessage),
+    Tls13EncryptApplication(Tls13EncryptApplication),
+    Tls13DecryptApplication(Tls13DecryptApplication),
     Encrypt(Encrypt),
     Decrypt(Decrypt),
     StartTraffic,
@@ -114,6 +116,19 @@ pub(crate) struct Tls13ServerFinishedVd {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13RecordMessage {
     pub(crate) record: Record,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Tls13EncryptApplication {
+    pub(crate) typ: ContentType,
+    pub(crate) plaintext_len: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Tls13DecryptApplication {
+    pub(crate) typ: ContentType,
+    pub(crate) version: ProtocolVersion,
+    pub(crate) payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

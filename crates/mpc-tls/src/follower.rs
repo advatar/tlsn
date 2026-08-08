@@ -1,7 +1,8 @@
 use crate::{
     msg::{
-        Message, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd, Tls13HandshakeHash,
-        Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
+        Message, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd, Tls13DecryptApplication,
+        Tls13EncryptApplication, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
+        Tls13ServerFinishedVd,
     },
     record_layer::{aead::MpcAesGcm, RecordLayer},
     tls13::Tls13KeyState,
@@ -24,7 +25,11 @@ use mpz_ot::{
 use mpz_share_conversion::{ShareConversionReceiver, ShareConversionSender};
 use serio::stream::IoStreamExt;
 use std::mem;
-use tls_core::msgs::enums::{NamedGroup, ProtocolVersion};
+use tls_core::msgs::{
+    base::Payload,
+    enums::{NamedGroup, ProtocolVersion},
+    message::OpaqueMessage,
+};
 use tlsn_core::{
     connection::{CertBinding, CertBindingV1_2, CertBindingV1_3, TlsVersion, VerifyData},
     transcript::{Record, TlsTranscript},
@@ -382,6 +387,7 @@ impl MpcTlsFollower {
                     );
                 }
                 Message::Tls13HelloHash(Tls13HelloHash { hello_hash }) => {
+                    debug!("setting TLS 1.3 hello hash");
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -389,15 +395,25 @@ impl MpcTlsFollower {
                     tls13
                         .set_hello_hash(&mut self.ctx, &mut *vm, hello_hash)
                         .await?;
+                    debug!("TLS 1.3 application AEAD circuits preallocated");
+                    debug!("TLS 1.3 hello hash set");
                 }
                 Message::Tls13HandshakeHash(Tls13HandshakeHash { handshake_hash }) => {
+                    debug!("setting TLS 1.3 application handshake hash");
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
 
-                    tls13
+                    let (client_share, server_share) = tls13
                         .set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash)
                         .await?;
+                    record_layer.prepare_tls13_keys(&mut *vm, client_share, server_share)?;
+                    vm.execute_all(&mut self.ctx)
+                        .await
+                        .map_err(MpcTlsError::hs)?;
+                    drop(vm);
+                    record_layer.setup(&mut self.ctx).await?;
+                    debug!("TLS 1.3 application record layer is ready");
                 }
                 Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
                     handshake_hash: _,
@@ -423,6 +439,39 @@ impl MpcTlsFollower {
                 }
                 Message::Tls13RecvRecord(Tls13RecordMessage { record }) => {
                     tls13_recv_records.push(record);
+                }
+                Message::Tls13EncryptApplication(Tls13EncryptApplication {
+                    typ,
+                    plaintext_len,
+                }) => {
+                    tls13
+                        .encrypt_application_record(
+                            &mut self.ctx,
+                            vm.clone(),
+                            &mut record_layer,
+                            typ,
+                            None,
+                            plaintext_len,
+                        )
+                        .await?;
+                }
+                Message::Tls13DecryptApplication(Tls13DecryptApplication {
+                    typ,
+                    version,
+                    payload,
+                }) => {
+                    tls13
+                        .decrypt_application_record(
+                            &mut self.ctx,
+                            vm.clone(),
+                            &mut record_layer,
+                            OpaqueMessage {
+                                typ,
+                                version,
+                                payload: Payload::new(payload),
+                            },
+                        )
+                        .await?;
                 }
                 Message::Encrypt(encrypt) => {
                     record_layer

@@ -9,12 +9,13 @@ use std::{collections::VecDeque, mem::take, sync::Arc};
 
 use aead::MpcAesGcm;
 use futures::TryFutureExt;
+use mpz_circuits::circuits::xor;
 use mpz_common::{Context, Task};
 use mpz_memory_core::{
     binary::{Binary, U8},
-    Array,
+    Array, MemoryExt, Vector, ViewExt,
 };
-use mpz_vm_core::Vm as VmTrait;
+use mpz_vm_core::{CallBuilder, CallableExt, Vm as VmTrait};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tls_core::{
@@ -27,6 +28,7 @@ use tracing::{debug, instrument};
 
 use crate::{
     record_layer::{aes_gcm::AesGcm, decrypt::DecryptOp, encrypt::EncryptOp},
+    tls13::nonce::split_iv_and_derive_nonce,
     MpcTlsError, Role, Vm,
 };
 pub(crate) use decrypt::DecryptMode;
@@ -192,6 +194,26 @@ impl RecordLayer {
         decrypt.ghash_key().map_err(MpcTlsError::record_layer)
     }
 
+    pub(crate) fn prepare_tls13_keys(
+        &mut self,
+        vm: &mut dyn VmTrait<Binary>,
+        client_share: [u8; 16],
+        server_share: [u8; 16],
+    ) -> Result<(), MpcTlsError> {
+        let client_key = alloc_shared_key(vm, self.role, client_share)?;
+        let server_key = alloc_shared_key(vm, self.role, server_share)?;
+        self.encrypter
+            .try_lock()
+            .map_err(|_| MpcTlsError::other("encrypt lock is held"))?
+            .prepare_tls13_key(vm, client_key)
+            .map_err(MpcTlsError::record_layer)?;
+        self.decrypt
+            .try_lock()
+            .map_err(|_| MpcTlsError::other("decrypt lock is held"))?
+            .prepare_tls13_key(vm, server_key)
+            .map_err(MpcTlsError::record_layer)
+    }
+
     pub(crate) async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), MpcTlsError> {
         let mut encrypt = self
             .encrypter
@@ -276,6 +298,137 @@ impl RecordLayer {
 
     pub(crate) fn wants_flush(&self) -> bool {
         !self.encrypt_buffer.is_empty() || !self.decrypt_buffer.is_empty()
+    }
+
+    /// Jointly encrypts one TLS 1.3 record body and computes its tag.
+    pub(crate) async fn encrypt_tls13(
+        &mut self,
+        ctx: &mut Context,
+        vm: Vm,
+        iv: Array<U8, 12>,
+        sequence: u64,
+        plaintext: Option<Vec<u8>>,
+        len: usize,
+        aad: Vec<u8>,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), MpcTlsError> {
+        let mut vm = vm
+            .try_lock_owned()
+            .map_err(|_| MpcTlsError::record_layer("VM lock is held"))?;
+        let mut encrypter = self
+            .encrypter
+            .try_lock()
+            .map_err(|_| MpcTlsError::record_layer("encrypt lock is held"))?;
+
+        let (prefix, nonce) = split_iv_and_derive_nonce(&mut *vm, iv, sequence)?;
+        encrypter.set_tls13_iv(prefix);
+        let (input, output) = encrypter
+            .apply_keystream_tls13(&mut *vm, nonce, len)
+            .map_err(MpcTlsError::record_layer)?;
+        if let Some(plaintext) = plaintext {
+            vm.assign(input, plaintext)
+                .map_err(MpcTlsError::record_layer)?;
+        }
+        vm.commit(input).map_err(MpcTlsError::record_layer)?;
+
+        let mut output_fut = vm.decode(output).map_err(MpcTlsError::record_layer)?;
+        let tag_output = vm
+            .decode(output)
+            .map_err(MpcTlsError::record_layer)?
+            .map_err(aead::AeadError::tag);
+        let compute_tag = encrypter
+            .compute_tag_tls13(&mut *vm, nonce, tag_output, aad)
+            .map_err(MpcTlsError::record_layer)?;
+
+        let (tags, _) = ctx
+            .try_join(
+                async move |ctx| {
+                    compute_tag
+                        .run(ctx)
+                        .map_err(MpcTlsError::record_layer)
+                        .await
+                },
+                async move |ctx| vm.execute_all(ctx).map_err(MpcTlsError::record_layer).await,
+            )
+            .await
+            .map_err(MpcTlsError::record_layer)??;
+        let ciphertext = output_fut
+            .try_recv()
+            .map_err(MpcTlsError::record_layer)?
+            .ok_or_else(|| MpcTlsError::record_layer("TLS 1.3 ciphertext is not ready"))?;
+        let tag = tags.and_then(|mut tags| tags.pop());
+
+        Ok((ciphertext, tag))
+    }
+
+    /// Jointly authenticates and decrypts one TLS 1.3 record body.
+    ///
+    /// The leader receives plaintext only after tag verification succeeds. The
+    /// follower sees only an OTP-masked keystream.
+    pub(crate) async fn decrypt_tls13(
+        &mut self,
+        ctx: &mut Context,
+        vm: Vm,
+        iv: Array<U8, 12>,
+        sequence: u64,
+        ciphertext: Vec<u8>,
+        aad: Vec<u8>,
+        tag: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, MpcTlsError> {
+        let mut vm = vm
+            .try_lock_owned()
+            .map_err(|_| MpcTlsError::record_layer("VM lock is held"))?;
+        let mut decrypter = self
+            .decrypt
+            .try_lock()
+            .map_err(|_| MpcTlsError::record_layer("decrypt lock is held"))?;
+
+        let (prefix, nonce) = split_iv_and_derive_nonce(&mut *vm, iv, sequence)?;
+        decrypter.set_tls13_iv(prefix);
+        let (mask, masked_keystream) = decrypter
+            .apply_keystream_tls13(&mut *vm, nonce, ciphertext.len())
+            .map_err(MpcTlsError::record_layer)?;
+        let otp = match self.role {
+            Role::Leader => {
+                let mut otp = vec![0u8; ciphertext.len()];
+                rand::rng().fill_bytes(&mut otp);
+                vm.assign(mask, otp.clone())
+                    .map_err(MpcTlsError::record_layer)?;
+                Some(otp)
+            }
+            Role::Follower => None,
+        };
+        vm.commit(mask).map_err(MpcTlsError::record_layer)?;
+        let mut masked_fut = vm
+            .decode(masked_keystream)
+            .map_err(MpcTlsError::record_layer)?;
+        let verify_tag = decrypter
+            .verify_tag_tls13(&mut *vm, nonce, ciphertext.clone(), aad, tag)
+            .map_err(MpcTlsError::record_layer)?;
+
+        let (verified, _) = ctx
+            .try_join(
+                async move |ctx| verify_tag.run(ctx).map_err(MpcTlsError::record_layer).await,
+                async move |ctx| vm.execute_all(ctx).map_err(MpcTlsError::record_layer).await,
+            )
+            .await
+            .map_err(MpcTlsError::record_layer)??;
+        let () = verified;
+
+        let masked_keystream = masked_fut
+            .try_recv()
+            .map_err(MpcTlsError::record_layer)?
+            .ok_or_else(|| MpcTlsError::record_layer("TLS 1.3 plaintext mask is not ready"))?;
+        let Some(otp) = otp else {
+            return Ok(None);
+        };
+        let mut plaintext = ciphertext;
+        plaintext
+            .iter_mut()
+            .zip(otp)
+            .zip(masked_keystream)
+            .for_each(|((byte, otp), keystream)| *byte ^= otp ^ keystream);
+
+        Ok(Some(plaintext))
     }
 
     pub(crate) fn start_traffic(&mut self) {
@@ -617,6 +770,44 @@ impl RecordLayer {
 
         (seq, aad)
     }
+}
+
+fn alloc_shared_key(
+    vm: &mut dyn VmTrait<Binary>,
+    role: Role,
+    share: [u8; 16],
+) -> Result<Array<U8, 16>, MpcTlsError> {
+    let leader: Array<U8, 16> = vm.alloc().map_err(MpcTlsError::record_layer)?;
+    let follower: Array<U8, 16> = vm.alloc().map_err(MpcTlsError::record_layer)?;
+    match role {
+        Role::Leader => {
+            vm.mark_private(leader).map_err(MpcTlsError::record_layer)?;
+            vm.assign(leader, share)
+                .map_err(MpcTlsError::record_layer)?;
+            vm.mark_blind(follower).map_err(MpcTlsError::record_layer)?;
+        }
+        Role::Follower => {
+            vm.mark_blind(leader).map_err(MpcTlsError::record_layer)?;
+            vm.mark_private(follower)
+                .map_err(MpcTlsError::record_layer)?;
+            vm.assign(follower, share)
+                .map_err(MpcTlsError::record_layer)?;
+        }
+    }
+    vm.commit(leader).map_err(MpcTlsError::record_layer)?;
+    vm.commit(follower).map_err(MpcTlsError::record_layer)?;
+    let output: Vector<U8> = vm
+        .call(
+            CallBuilder::new(Arc::new(xor(128)))
+                .arg(leader)
+                .arg(follower)
+                .build()
+                .map_err(MpcTlsError::record_layer)?,
+        )
+        .map_err(MpcTlsError::record_layer)?;
+    output
+        .try_into()
+        .map_err(|_| MpcTlsError::record_layer("shared TLS 1.3 key is not 16 bytes"))
 }
 
 #[derive(Clone)]

@@ -16,8 +16,9 @@ use tls_core::msgs::{
     message::{OpaqueMessage, PlainMessage},
 };
 use tlsn_core::transcript::{ContentType as TranscriptContentType, Record};
+use tracing::debug;
 
-use crate::{MpcTlsError, Role};
+use crate::{decode::OneTimePadShared, record_layer::RecordLayer, MpcTlsError, Role, Vm};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -154,19 +155,21 @@ pub struct Tls13SessionKeys {
 }
 
 pub(crate) struct Tls13KeyState {
+    role: Role,
     inner: Tls13KeySched,
     keys: Tls13SessionKeys,
 }
 
 impl Tls13KeyState {
     pub(crate) fn new(mode: Mode, role: Role) -> Self {
-        let role = match role {
+        let key_schedule_role = match role {
             Role::Leader => KeyScheduleRole::Leader,
             Role::Follower => KeyScheduleRole::Follower,
         };
 
         Self {
-            inner: Tls13KeySched::new(mode, role),
+            role,
+            inner: Tls13KeySched::new(mode, key_schedule_role),
             keys: Tls13SessionKeys::default(),
         }
     }
@@ -210,11 +213,18 @@ impl Tls13KeyState {
         ctx: &mut Context,
         vm: &mut (dyn VmTrait<Binary> + Send),
         handshake_hash: [u8; 32],
-    ) -> Result<(), MpcTlsError> {
+    ) -> Result<([u8; 16], [u8; 16]), MpcTlsError> {
         self.inner.set_handshake_hash(handshake_hash)?;
         self.flush_all(ctx, vm).await?;
+        debug!("TLS 1.3 key schedule application outputs complete");
 
         let keys = self.inner.application_keys()?;
+        let mut client_share =
+            OneTimePadShared::new(self.role, keys.client_write_key, vm).map_err(MpcTlsError::hs)?;
+        let mut server_share =
+            OneTimePadShared::new(self.role, keys.server_write_key, vm).map_err(MpcTlsError::hs)?;
+        vm.execute_all(ctx).await.map_err(MpcTlsError::hs)?;
+        debug!("TLS 1.3 application key shares exported");
 
         // The application traffic keys are deliberately NOT decoded. They were,
         // until this commit, and that voided the entire point of the protocol: a
@@ -229,7 +239,10 @@ impl Tls13KeyState {
             server: ReadEpoch::new(Epoch::Application, 0, keys.server_write_key, keys.server_iv),
         });
 
-        Ok(())
+        Ok((
+            (&mut client_share).await.map_err(MpcTlsError::hs)?,
+            (&mut server_share).await.map_err(MpcTlsError::hs)?,
+        ))
     }
 
     #[allow(dead_code)]
@@ -307,6 +320,109 @@ impl Tls13KeyState {
                  they let the prover forge server responses",
             )),
         }
+    }
+
+    pub(crate) async fn encrypt_application_record(
+        &mut self,
+        ctx: &mut Context,
+        vm: Vm,
+        record_layer: &mut RecordLayer,
+        typ: ContentType,
+        plaintext: Option<Vec<u8>>,
+        plaintext_len: usize,
+    ) -> Result<Option<(OpaqueMessage, Record)>, MpcTlsError> {
+        let epoch = self
+            .keys
+            .application
+            .as_mut()
+            .ok_or_else(|| MpcTlsError::hs("tls13 application write epoch is not available"))?;
+        let sequence = epoch.client.reserve_sequence()?;
+        let iv = epoch.client.iv;
+        let body_len = plaintext_len
+            .checked_add(1)
+            .ok_or_else(|| MpcTlsError::hs("tls13 plaintext length overflow"))?;
+        let record_plaintext = plaintext.clone();
+        let body = plaintext.map(|mut plaintext| {
+            plaintext.push(typ.get_u8());
+            plaintext
+        });
+        let aad = make_tls13_aad(body_len + 16).to_vec();
+        let (ciphertext, tag) = record_layer
+            .encrypt_tls13(ctx, vm, iv, sequence, body, body_len, aad)
+            .await?;
+        let Some(tag) = tag else {
+            return Ok(None);
+        };
+        let mut payload = ciphertext.clone();
+        payload.extend_from_slice(&tag);
+        let record = Record {
+            seq: sequence,
+            typ: TranscriptContentType::from(typ),
+            plaintext: record_plaintext,
+            explicit_nonce: Vec::new(),
+            ciphertext,
+            tag: Some(tag),
+        };
+
+        Ok(Some((
+            OpaqueMessage {
+                typ: ContentType::ApplicationData,
+                version: ProtocolVersion::TLSv1_2,
+                payload: Payload::new(payload),
+            },
+            record,
+        )))
+    }
+
+    pub(crate) async fn decrypt_application_record(
+        &mut self,
+        ctx: &mut Context,
+        vm: Vm,
+        record_layer: &mut RecordLayer,
+        msg: OpaqueMessage,
+    ) -> Result<Option<(PlainMessage, Record)>, MpcTlsError> {
+        if msg.typ != ContentType::ApplicationData || msg.version != ProtocolVersion::TLSv1_2 {
+            return Err(MpcTlsError::hs("unexpected TLS 1.3 record header"));
+        }
+        let epoch = self
+            .keys
+            .application
+            .as_mut()
+            .ok_or_else(|| MpcTlsError::hs("tls13 application read epoch is not available"))?;
+        let sequence = epoch.server.reserve_sequence()?;
+        let iv = epoch.server.iv;
+        let mut ciphertext = msg.payload.0;
+        if ciphertext.len() < 16 {
+            return Err(MpcTlsError::hs(
+                "tls13 record payload is shorter than the tag",
+            ));
+        }
+        let tag = ciphertext.split_off(ciphertext.len() - 16);
+        let aad = make_tls13_aad(ciphertext.len() + 16).to_vec();
+        let plaintext = record_layer
+            .decrypt_tls13(ctx, vm, iv, sequence, ciphertext.clone(), aad, tag.clone())
+            .await?;
+        let Some(mut plaintext) = plaintext else {
+            return Ok(None);
+        };
+        let typ = unpad_tls13(&mut plaintext)?;
+        let record = Record {
+            seq: sequence,
+            typ: TranscriptContentType::from(typ),
+            plaintext: Some(plaintext.clone()),
+            explicit_nonce: Vec::new(),
+            ciphertext,
+            tag: Some(tag),
+        };
+
+        Ok(Some((
+            PlainMessage {
+                typ,
+                version: ProtocolVersion::TLSv1_3,
+                payload: Payload::new(plaintext),
+            },
+            record,
+        )))
     }
 
     async fn flush_all(
@@ -514,7 +630,7 @@ mod tests {
 
         state.alloc(vm, secret)?;
         state.set_hello_hash(ctx, vm, hello_hash).await?;
-        state.set_handshake_hash(ctx, vm, handshake_hash).await?;
+        let _ = state.set_handshake_hash(ctx, vm, handshake_hash).await?;
 
         Ok(())
     }

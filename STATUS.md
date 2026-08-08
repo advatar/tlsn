@@ -4,6 +4,8 @@
 
 - [x] Step A: remove complete application-traffic-key decoding and disable the unsound local AEAD path.
 - [x] Step B: introduce typed read/write epochs that exclusively own their sequence numbers.
+- [x] Add a distinct preprocessed GHASH key domain plus per-record secret-nonce joint encrypt,
+      tag-compute, tag-verify, and OTP-masked decrypt operations for TLS 1.3 application records.
 - [ ] Implement joint AEAD over secret-shared TLS 1.3 application traffic keys.
 - [ ] Correct the research document's blocker diagnosis and M3 group.
 - [ ] Fix TLS 1.3 interoperability against Caddy and OpenSSL `s_server`.

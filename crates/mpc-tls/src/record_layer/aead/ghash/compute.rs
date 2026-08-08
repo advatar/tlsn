@@ -25,6 +25,7 @@ pub(crate) struct ComputeTags {
     role: Role,
     data: Vec<ComputeTagData>,
     ghash: Arc<dyn Ghash + Send + Sync>,
+    key_index: usize,
 }
 
 impl ComputeTags {
@@ -32,8 +33,14 @@ impl ComputeTags {
         role: Role,
         data: Vec<ComputeTagData>,
         ghash: Arc<dyn Ghash + Send + Sync>,
+        key_index: usize,
     ) -> Self {
-        Self { role, data, ghash }
+        Self {
+            role,
+            data,
+            ghash,
+            key_index,
+        }
     }
 }
 
@@ -46,6 +53,7 @@ impl Task for ComputeTags {
             role,
             mut data,
             ghash,
+            key_index,
         } = self;
 
         if data.is_empty() {
@@ -73,7 +81,7 @@ impl Task for ComputeTags {
         for ((mut tag_share, ciphertext), data) in j0_shares.into_iter().zip(ciphertexts).zip(data)
         {
             let ghash_share = ghash
-                .compute(&build_ghash_data(data.aad, ciphertext))
+                .compute(key_index, &build_ghash_data(data.aad, ciphertext))
                 .map_err(AeadError::tag)?;
             tag_share
                 .iter_mut()
