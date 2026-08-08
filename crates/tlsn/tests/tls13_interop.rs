@@ -19,7 +19,7 @@ fn caddy_enabled() -> bool {
     std::env::var_os("TLSN_RUN_CADDY_INTEROP").is_some()
 }
 
-async fn run_docker_case(port: u16, roots: Vec<CertificateDer>) {
+async fn run_docker_case(port: u16, roots: Vec<CertificateDer>, request_path: &'static str) {
     let _ = tracing_subscriber::fmt::try_init();
 
     let mut last_err = None;
@@ -50,7 +50,7 @@ async fn run_docker_case(port: u16, roots: Vec<CertificateDer>) {
             server_name: "localhost",
             roots,
             client_auth: None,
-            request_path: "/",
+            request_path,
             request_headers: Vec::new(),
         },
         socket.compat(),
@@ -70,6 +70,7 @@ async fn tls13_interop_nginx_rsa() {
         vec![CertificateDer(
             FixtureCertProfile::Rsa.ca_cert_der().to_vec(),
         )],
+        "/",
     )
     .await;
 }
@@ -86,6 +87,7 @@ async fn tls13_interop_nginx_ecdsa() {
         vec![CertificateDer(
             FixtureCertProfile::Ecdsa.ca_cert_der().to_vec(),
         )],
+        "/",
     )
     .await;
 }
@@ -102,6 +104,7 @@ async fn tls13_interop_caddy_rsa() {
         vec![CertificateDer(
             FixtureCertProfile::Rsa.ca_cert_der().to_vec(),
         )],
+        "/",
     )
     .await;
 }
@@ -118,6 +121,7 @@ async fn tls13_interop_apache_rsa() {
         vec![CertificateDer(
             FixtureCertProfile::Rsa.ca_cert_der().to_vec(),
         )],
+        "/",
     )
     .await;
 }
@@ -134,6 +138,7 @@ async fn tls13_interop_openssl_rsa() {
         vec![CertificateDer(
             FixtureCertProfile::Rsa.ca_cert_der().to_vec(),
         )],
+        "/index.html",
     )
     .await;
 }

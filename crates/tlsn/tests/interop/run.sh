@@ -17,13 +17,7 @@ cd "$REPO_ROOT"
 TLSN_RUN_DOCKER_INTEROP=1 cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_nginx_rsa
 TLSN_RUN_DOCKER_INTEROP=1 cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_nginx_ecdsa
 TLSN_RUN_DOCKER_INTEROP=1 cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_apache_rsa
-
-if [[ "${TLSN_RUN_CADDY_INTEROP:-}" == "1" ]]; then
-  TLSN_RUN_DOCKER_INTEROP=1 TLSN_RUN_CADDY_INTEROP=1 \
-    cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_caddy_rsa
-fi
-
-if [[ "${TLSN_RUN_OPENSSL_SSERVER:-}" == "1" ]]; then
-  TLSN_RUN_DOCKER_INTEROP=1 TLSN_RUN_OPENSSL_SSERVER=1 \
-    cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_openssl_rsa
-fi
+TLSN_RUN_DOCKER_INTEROP=1 TLSN_RUN_CADDY_INTEROP=1 \
+  cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_caddy_rsa
+TLSN_RUN_DOCKER_INTEROP=1 TLSN_RUN_OPENSSL_SSERVER=1 \
+  cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_openssl_rsa

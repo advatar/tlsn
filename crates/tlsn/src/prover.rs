@@ -196,13 +196,15 @@ impl Prover<state::CommitAccepted> {
         };
 
         // Which versions to offer decides which MPC-TLS path the session takes, because a dual-stack
-        // server negotiates the best it is offered. The legacy configuration variant names retain
-        // their `Unsafe` suffix for API compatibility, but TLS 1.3 application keys now remain
-        // secret-shared and received plaintext is cryptographically gated on tag verification.
+        // server negotiates the best it is offered. Legacy `Unsafe` spellings remain aliases for
+        // serialized/API compatibility.
+        #[allow(deprecated)]
         let versions: &[&tls_client::SupportedProtocolVersion] = match config.offered_versions() {
             OfferedVersions::Tls12Only => &[&tls_client::version::TLS12],
-            OfferedVersions::Tls13Unsafe => &[&tls_client::version::TLS13],
-            OfferedVersions::Tls12AndTls13Unsafe => {
+            OfferedVersions::Tls13Only | OfferedVersions::Tls13Unsafe => {
+                &[&tls_client::version::TLS13]
+            }
+            OfferedVersions::Tls12AndTls13 | OfferedVersions::Tls12AndTls13Unsafe => {
                 &[&tls_client::version::TLS12, &tls_client::version::TLS13]
             }
         };

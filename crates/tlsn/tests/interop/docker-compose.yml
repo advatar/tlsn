@@ -43,3 +43,4 @@ services:
       - "127.0.0.1:30447:443"
     volumes:
       - ../../../tls/client/test-ca/rsa:/certs/rsa:ro
+      - ./www:/www:ro

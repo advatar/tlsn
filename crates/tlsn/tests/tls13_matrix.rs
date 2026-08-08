@@ -17,8 +17,6 @@ async fn run_fixture_case(fixture_config: FixtureConfig, case: Tls13TestCase) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "TLS 1.3 application records need joint AEAD; the plaintext application keys \
-this path relied on were removed because they let the prover forge server responses"]
 async fn tls13_fixture_default_without_client_auth_request() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -36,8 +34,6 @@ async fn tls13_fixture_default_without_client_auth_request() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "TLS 1.3 application records need joint AEAD; the plaintext application keys \
-this path relied on were removed because they let the prover forge server responses"]
 async fn tls13_fixture_default_with_optional_client_auth_request() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -55,8 +51,6 @@ async fn tls13_fixture_default_with_optional_client_auth_request() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "TLS 1.3 application records need joint AEAD; the plaintext application keys \
-this path relied on were removed because they let the prover forge server responses"]
 async fn tls13_fixture_default_with_required_client_auth() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -77,8 +71,6 @@ async fn tls13_fixture_default_with_required_client_auth() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "TLS 1.3 application records need joint AEAD; the plaintext application keys \
-this path relied on were removed because they let the prover forge server responses"]
 async fn tls13_fixture_rsa_chain() {
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -99,8 +91,6 @@ async fn tls13_fixture_rsa_chain() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "TLS 1.3 application records need joint AEAD; the plaintext application keys \
-this path relied on were removed because they let the prover forge server responses"]
 async fn tls13_fixture_ecdsa_chain() {
     let _ = tracing_subscriber::fmt::try_init();
 

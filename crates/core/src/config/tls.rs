@@ -15,29 +15,18 @@ use crate::{
 pub enum OfferedVersions {
     /// Offer TLS 1.2 only.
     ///
-    /// The default, and the only fully supported path: a dual-stack server that
-    /// would otherwise choose 1.3 is held to the version this fork can notarize
-    /// end to end.
+    /// The compatibility default for existing callers.
     #[default]
     Tls12Only,
-    /// Offer TLS 1.3 only. **No security guarantee — testing only.**
-    ///
-    /// The TLS 1.3 MPC-TLS path decodes the application traffic keys to
-    /// plaintext (`crates/mpc-tls/src/tls13.rs`, `set_handshake_hash`), so the
-    /// prover holds `server_write_key` and can forge server responses. That
-    /// voids provenance, which is the entire point of the protocol. The name
-    /// carries `Unsafe` because passing tests here demonstrate working plumbing
-    /// against honest servers and nothing more.
-    ///
-    /// Exists so the 1.3 test matrix can exercise the path and so its failures
-    /// are observable rather than masked by a downgrade to 1.2.
+    /// Offer TLS 1.3 only.
+    Tls13Only,
+    /// Offer both supported versions and let the server choose.
+    Tls12AndTls13,
+    /// Legacy spelling of [`OfferedVersions::Tls13Only`].
+    #[deprecated(note = "TLS 1.3 now uses secret-shared joint AEAD; use Tls13Only")]
     Tls13Unsafe,
-    /// Offer both and let the server choose. **No security guarantee — testing
-    /// only.**
-    ///
-    /// Strictly worse than [`OfferedVersions::Tls13Unsafe`] for testing, and
-    /// unsafe for the same reason: against a dual-stack server this negotiates
-    /// 1.3 and so selects the path with no guarantee.
+    /// Legacy spelling of [`OfferedVersions::Tls12AndTls13`].
+    #[deprecated(note = "TLS 1.3 now uses secret-shared joint AEAD; use Tls12AndTls13")]
     Tls12AndTls13Unsafe,
 }
 
@@ -178,23 +167,13 @@ mod tests {
         assert_eq!(OfferedVersions::default(), OfferedVersions::Tls12Only);
     }
 
-    /// The 1.3 variants must keep `Unsafe` in their names. The path they select
-    /// decodes the application traffic keys to plaintext, so a caller can only
-    /// reach it by naming the risk. Renaming them to something reassuring would
-    /// be a regression even though nothing would fail to compile.
     #[test]
-    fn tls13_variants_are_named_unsafe() {
-        for variant in [
-            OfferedVersions::Tls13Unsafe,
-            OfferedVersions::Tls12AndTls13Unsafe,
-        ] {
-            let name = format!("{variant:?}");
-            assert!(
-                name.contains("Unsafe"),
-                "{name} offers TLS 1.3 and must say so in its name"
-            );
-        }
-        assert!(!format!("{:?}", OfferedVersions::Tls12Only).contains("Unsafe"));
+    fn tls13_has_supported_configuration_variants() {
+        assert_eq!(format!("{:?}", OfferedVersions::Tls13Only), "Tls13Only");
+        assert_eq!(
+            format!("{:?}", OfferedVersions::Tls12AndTls13),
+            "Tls12AndTls13"
+        );
     }
 
     /// A config serialized before `offered_versions` existed must still

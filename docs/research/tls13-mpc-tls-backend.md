@@ -1,6 +1,6 @@
 # TLS 1.3 MPC-TLS backend — assessment & research plan
 
-**Status:** key-disclosure hole closed; 1.3 non-functional pending joint AEAD (steps B–D) · **Audience:** MPC-TLS engineer picking this up
+**Status:** TLS 1.3 joint AEAD and authenticated release implemented; fixture and nginx/Apache/Caddy/OpenSSL interop green; security hardening and audit remain · **Audience:** MPC-TLS engineer picking this up
 **Companion:** [`tls13-mpc-tls-backend.proposal.md`](./tls13-mpc-tls-backend.proposal.md) — the original design brief.
 
 ---
@@ -51,13 +51,13 @@ ones I would make:
 
 1. **Effort is understated.** This is a multi-month, research-grade effort ending in a **cryptographic
    audit** — not an incremental feature.
-2. **The two-party X25519 is the real lift**, and the brief's "start with a generic Boolean circuit"
+2. **The two-party P-256 ECDH is the asymmetric core**, and the brief's "start with a generic Boolean circuit"
    reference path is likely *impractically* slow (a 255-bit Montgomery ladder as a garbled Boolean circuit
    is enormous, and worse in browser WASM). Prefer curve/field arithmetic over `mpz-fields` + `mpz-ole`.
 3. **The proposed `mpz-hkdf` / `mpz-hmac` / `mpz-x25519` / `mpz-aead` crates do not exist.** They must be
    *built on* the existing `mpz-*` toolbox (see §3). Treat the brief's crate tree as illustration only.
-4. **Classical KEM only.** The brief's key exchange is X25519/P-256; it does not address PQ TLS transport
-   (e.g. `X25519MLKEM768`). That is a separate future topic and independent of our hybrid-PQ *attestation*.
+4. **Classical KEM only.** The implemented TLS 1.3 key exchange is P-256; it does not yet provide
+   threshold security for PQ TLS transport. That is a separate workstream from hybrid-PQ *attestation*.
 
 ---
 
@@ -82,22 +82,21 @@ ones I would make:
 > Lesson for anyone extending this document: confirming that a symbol *exists* in two files is not
 > the same as confirming the logic between them is missing. Run the tests.
 
-> ## ✅ The key-disclosure hole is closed — and 1.3 is non-functional as a result
+> ## ✅ The key-disclosure hole is closed and joint TLS 1.3 record protection is operational
 >
 > **Resolved.** The application traffic keys are no longer decoded. `set_handshake_hash` keeps them as
 > VM references, exactly as the TLS 1.2 path always has, and the plaintext shadow copy
 > (`clear_application`) and the local `Aes128Gcm` that consumed it are gone.
 >
-> **Consequence, accepted deliberately:** TLS 1.3 application records now fail with an explicit error
-> until joint AEAD is wired up, so the six fixture tests and the three passing interop cases are
-> `#[ignore]`d. This was the expert's explicit recommendation — remove the disclosure first, even at
-> the cost of a working path — on the grounds that an unusable 1.3 is strictly safer than a working
-> one with no provenance, and it makes shipping the hole impossible rather than merely discouraged.
-> The handshake epoch still completes; only the application epoch is blocked.
+> Application keys and IVs remain VM references. Bounded per-record AES/J0 circuits are allocated in
+> the initial MPC graph, directional epochs own their sequence numbers, and GHASH uses only the
+> negotiated protocol's key domain. Incoming plaintext is two-sided masked; the verifier's mask is
+> released in an HMAC capsule keyed by its tag share, so an invalid public tag cannot open it.
 >
-> The remaining work is tracked as steps B–D: typed read/write epochs owning sequence numbers,
-> cryptographically gated authenticated release, then the security-assumption inventory and
-> protocol-security tests. `Tls13Unsafe` and its runtime warning stay until all of it lands.
+> The five-case fixture matrix and nginx RSA/ECDSA, Apache RSA, Caddy RSA, and raw OpenSSL `s_server`
+> interoperability cases pass end to end through transcript proof verification. Supported callers
+> use `Tls13Only` or `Tls12AndTls13`; the deprecated `Tls13Unsafe` spellings remain only for API
+> compatibility and no longer emit the obsolete key-disclosure warning.
 >
 > ### The original defect, for the record
 >
@@ -123,10 +122,10 @@ ones I would make:
 > only the leader should learn a value (the handshake secrets), so the distinction between masking and
 > decoding was understood — the plain decode of the *application* keys is the gap, not an idiom.
 >
-> **The passing tests cannot detect this.** They verify plumbing against honest servers; nothing
-> exercises a malicious prover. A green matrix here means records flow, not that the guarantee holds.
-> Until this is closed, offering 1.3 is explicitly unsafe — hence
-> [`OfferedVersions::Tls13Unsafe`] and the runtime warning the prover emits.
+> **The original passing tests could not detect this.** They verified plumbing against honest
+> servers, not malicious-prover behavior. The current implementation adds a negative
+> authenticated-release test: changing the expected tag share prevents the verifier mask capsule
+> from opening. A green interop matrix alone is still not a substitute for external review.
 >
 > ### Closing it looks tractable — likely rewiring, not new cryptography
 >
@@ -216,7 +215,7 @@ flowchart TB
       PARSE["parse handshake · X.509 chain ·<br/>hostname · CertificateVerify · transcript hash"]
     end
     subgraph MPC["MPC islands — touch secret-shared material only (mpz-*)"]
-      ECDHE["distributed X25519<br/>mpz-fields + mpz-ole + mpz-ot"]
+      ECDHE["distributed P-256 ECDH<br/>mpz-fields + mpz-ole + mpz-ot"]
       KS["MPC HKDF / HMAC key schedule<br/>mpz-garble + mpz-circuits"]
       AEAD["joint AES-GCM auth+decrypt / encrypt<br/>mpz-garble (as in the 1.2 path)"]
     end
@@ -241,15 +240,15 @@ HKDF/HMAC over secret material, and AEAD; everything else is ordinary Rust with 
 Adapted from the brief's M1–M6, pointed at real modules.
 
 1. **M1 — non-MPC 1.3 reference engine (the oracle).** A deterministic single-party 1.3 client for the
-   narrow profile (X25519, `TLS_AES_128_GCM_SHA256`, HTTP/1.1) with RFC 8446 test-vector coverage and
+   narrow profile (P-256, `TLS_AES_128_GCM_SHA256`, HTTP/1.1) with RFC 8446 test-vector coverage and
    key-schedule / transcript tracing. Lives alongside `crates/tls/client`. Everything MPC is later tested
    against this.
 2. **M2 — MPC key schedule + record layer.** `MpcHkdf`, `MpcHmac`, AEAD, sequence-derived nonces,
    authenticated-release semantics — on `mpz-garble`/`mpz-circuits`/`mpz-share-conversion`, validated on
    RFC vectors with fixed secrets before ECDHE.
-3. **M3 — distributed X25519 (the crux).** Shared client-scalar generation + shared-secret compute on
+3. **M3 — distributed P-256 ECDH (implemented asymmetric core).** Shared client-scalar generation + shared-secret compute on
    `mpz-fields` + `mpz-ole`. Tests: neither party alone derives `Z`; valid public key; low-order/invalid
-   point rejection; matches a reference X25519; aborts leak no reusable scalar share.
+   point rejection; matches a reference P-256 ECDH; aborts leak no reusable scalar share.
 4. **M4 — full handshake** in `crates/mpc-tls` (new `tls13/`): ClientHello/ServerHello, encrypted server
    flight with authenticated release, X.509 + `CertificateVerify` + `Finished`, transition to app keys.
    Retire `crates/mpc-tls/src/tls13.rs`; make `crates/tlsn/tests/tls13_{matrix,interop}.rs` pass for real.
@@ -276,7 +275,7 @@ same discipline as the hybrid-PQ downgrade-closed proofs) · record-order integr
 
 Multi-month, research-grade. The dominant costs and risks:
 
-- **Two-party X25519** at the right security level is the single biggest new asymmetric-MPC component and
+- **Two-party P-256 ECDH** at the right security level is the single biggest asymmetric-MPC component and
   the main audit surface.
 - **Browser-WASM performance** (`crates/wasm`) is a real constraint — favour field/OLE arithmetic over
   large Boolean circuits.
@@ -292,9 +291,10 @@ develop in the open and potentially contribute upstream, rather than living only
 
 ## 7. TL;DR for the picker-upper
 
-Start at **M1** (reference engine as an oracle) → **M2** (MPC key schedule/record on the existing `mpz`
-toolbox) → **M3** (distributed X25519 — the crux). Replace `crates/mpc-tls/src/tls13.rs` with a clean
-typestate machine; add a **version-specific** 1.3 proof next to `crates/notary-artifact` rather than
+The implementation progressed through **M1** (reference oracle) → **M2** (MPC key schedule/record on
+the existing `mpz` toolbox) → **M3** (distributed P-256 ECDH). Continue by hardening
+`crates/mpc-tls/src/tls13.rs` and the record layer with a
+typestate machine; keep the **version-specific** 1.3 proof path separate rather than
 overloading the 1.2 one; keep the shipped 1.2 path working throughout. The design brief in the companion
 file is sound on architecture; treat its crate/primitive names as illustrative and map them to the table
 in §3.
