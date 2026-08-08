@@ -169,6 +169,11 @@ interoperability with nginx, Apache httpd, Caddy, and OpenSSL `s_server`.
 Performance measurements and reproducible hardware/software details remain to
 be collected before submission.
 
+The Docker-backed interoperability matrix was rerun on the verification
+branch. All five cases passed: nginx RSA, nginx ECDSA, Apache RSA, Caddy RSA,
+and OpenSSL `s_server`. The exact command is `./formal/interop.sh`; the focused
+fixture and core validation are run by `./formal/validate.sh`.
+
 # Claim--evidence matrix
 
 | Claim | Evidence now | Missing evidence |
@@ -179,6 +184,10 @@ be collected before submission.
 | Fixed-IV nonce derivation is injective | Lean and Kani | Circuit/reference equivalence |
 | Full proof transcript is authentic | Tamarin handshake/transcript model plus end-to-end tests | Concrete HKDF/parser refinement |
 | Selective disclosure is private | Existing protocol tests | Leakage function and equivalence proof |
+
+The interoperation result is evidence of compatibility, not a security proof;
+the server implementations are honest test peers and do not exercise the
+malicious-party experiments.
 
 # Limitations and research agenda
 
