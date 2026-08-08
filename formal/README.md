@@ -67,6 +67,9 @@ Apache RSA, Caddy RSA, and OpenSSL `s_server`.
 The complete command matrix and expected evidence are recorded in
 `formal/REPRODUCIBILITY.md`.
 
+The symbolic-to-Rust mapping and open proof obligations are recorded in
+`formal/REFINEMENT_BOUNDARY.md`.
+
 ## Epoch and nonce specification
 
 `lean/Tls13Epoch.lean` proves that successful sequence reservation returns the

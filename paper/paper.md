@@ -233,6 +233,8 @@ These counts are reproducibility anchors, not a claim of exhaustive coverage.
 The full command matrix, including the RFC-derived TLS 1.3 HKDF vectors in
 `crates/components/hmac-sha256/src/kdf/expand.rs`, is recorded in
 `formal/REPRODUCIBILITY.md`.
+The symbolic-to-Rust mapping and the unproved refinement obligations are
+listed in `formal/REFINEMENT_BOUNDARY.md`.
 
 # Conclusion
 
