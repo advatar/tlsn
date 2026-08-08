@@ -81,6 +81,10 @@ numbers. It also proves that RFC 8446 nonce derivation is injective for a fixed
 These are theorems about the Lean specification. A separate refinement or
 model-checking step is required to connect them to the Rust implementation.
 
+`lean/Tls13HkdfLabel.lean` proves the TLS 1.3 HKDF label framing length and
+prefix structure used by the Rust encoder. It intentionally does not claim
+cryptographic HMAC correctness.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

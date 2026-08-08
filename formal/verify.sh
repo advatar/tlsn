@@ -9,6 +9,7 @@ schedule_proof_output="$(mktemp /tmp/tlsn-tamarin-schedule-proof.XXXXXX)"
 trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output" "$schedule_proof_output"' EXIT
 
 lean formal/lean/Tls13Epoch.lean
+lean formal/lean/Tls13HkdfLabel.lean
 cargo kani -p tlsn-mpc-tls --quiet --output-format terse
 
 tamarin-prover --prove --quiet "$model" | tee "$proof_output"

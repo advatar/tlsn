@@ -157,6 +157,10 @@ sequence, advances it exactly once, preserves the key generation, rejects
 exhaustion, and cannot return a wrapped sequence. It also proves nonce
 injectivity for a fixed IV using XOR cancellation.
 
+A companion Lean specification proves the length and `tls13 ` prefix framing
+of `HkdfLabel`, matching the Rust encoder's structural obligation. This is a
+byte-layout theorem, not a proof of HMAC or HKDF circuit correctness.
+
 Four Kani harnesses model-check the actual Rust read/write reservation methods
 and nonce function for all `u64` values and all 96-bit IVs. These checks connect
 the stated local invariants to the implementation but do not constitute a
