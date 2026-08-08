@@ -23,7 +23,9 @@ const MAX_SENT_DATA: usize = 1 << 12;
 // Maximum number of application records sent from prover to server
 const MAX_SENT_RECORDS: usize = 8;
 // Maximum number of bytes that can be received by prover from server
-const MAX_RECV_DATA: usize = 1 << 15;
+// The fixture responses are intentionally tiny. Keep this bound realistic so
+// TLS 1.3 preprocessing does not reserve eight worst-case 16 KiB AES circuits.
+const MAX_RECV_DATA: usize = 1 << 10;
 // Maximum number of application records received by prover from server
 const MAX_RECV_RECORDS: usize = 8;
 

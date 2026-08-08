@@ -180,6 +180,14 @@ impl Tls13KeyState {
         self.inner.alloc(vm, pms).map_err(MpcTlsError::from)
     }
 
+    pub(crate) fn allocated_application_keys(
+        &self,
+    ) -> Result<hmac_sha256::ApplicationKeys, MpcTlsError> {
+        self.inner
+            .allocated_application_keys()
+            .map_err(MpcTlsError::from)
+    }
+
     pub(crate) async fn set_hello_hash(
         &mut self,
         ctx: &mut Context,
@@ -211,14 +219,12 @@ impl Tls13KeyState {
         ctx: &mut Context,
         vm: &mut (dyn VmTrait<Binary> + Send),
         handshake_hash: [u8; 32],
-    ) -> Result<([u8; 16], [u8; 16]), MpcTlsError> {
+    ) -> Result<(), MpcTlsError> {
         self.inner.set_handshake_hash(handshake_hash)?;
         self.flush_all(ctx, vm).await?;
         debug!("TLS 1.3 key schedule application outputs complete");
 
         let keys = self.inner.application_keys()?;
-        let key_shares = self.inner.application_key_shares()?;
-        debug!("TLS 1.3 application key shares exported");
 
         // The application traffic keys are deliberately NOT decoded. They were,
         // until this commit, and that voided the entire point of the protocol: a
@@ -233,7 +239,7 @@ impl Tls13KeyState {
             server: ReadEpoch::new(Epoch::Application, 0, keys.server_write_key, keys.server_iv),
         });
 
-        Ok(key_shares)
+        Ok(())
     }
 
     #[allow(dead_code)]

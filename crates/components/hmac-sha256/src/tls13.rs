@@ -2,11 +2,10 @@
 
 use std::mem;
 
-use mpz_core::bitvec::BitVec;
 use mpz_vm_core::{
     memory::{
         binary::{Binary, U8},
-        Array, DecodeFutureTyped, MemoryExt,
+        Array, MemoryExt,
     },
     OneTimePad, Vm,
 };
@@ -41,7 +40,7 @@ pub struct Tls13KeySched {
     master_secret: Option<HkdfExtract>,
     // Allocated application secrets.
     application: Option<ApplicationSecrets>,
-    application_key_shares: Option<(ApplicationKeyShare, ApplicationKeyShare)>,
+    allocated_application_keys: Option<ApplicationKeys>,
     state: State,
 }
 
@@ -52,7 +51,7 @@ impl Tls13KeySched {
             mode,
             role,
             application: None,
-            application_key_shares: None,
+            allocated_application_keys: None,
             master_secret: None,
             state: State::Initialized,
         }
@@ -113,14 +112,10 @@ impl Tls13KeySched {
         let mut aps = ApplicationSecrets::new(self.mode);
         aps.alloc(vm, master_secret.output())?;
         let keys = aps.allocated_keys();
-        let application_key_shares = Some((
-            ApplicationKeyShare::new(self.role, keys.client_write_key, vm)?,
-            ApplicationKeyShare::new(self.role, keys.server_write_key, vm)?,
-        ));
 
         self.master_secret = Some(master_secret);
         self.application = Some(aps);
-        self.application_key_shares = application_key_shares;
+        self.allocated_application_keys = Some(keys);
         self.state = State::Handshake {
             secrets: hs_secrets,
             masked_cs,
@@ -334,59 +329,11 @@ impl Tls13KeySched {
         }
     }
 
-    /// Returns additive shares of the application traffic keys.
-    pub fn application_key_shares(&mut self) -> Result<([u8; 16], [u8; 16]), FError> {
-        if !matches!(self.state, State::Complete(_)) {
-            return Err(FError::state("application keys are not complete"));
-        }
-        let (client, server) = self
-            .application_key_shares
-            .take()
-            .ok_or_else(|| FError::state("application key shares were already consumed"))?;
-        Ok((client.finish()?, server.finish()?))
-    }
-}
-
-enum ApplicationKeyShare {
-    Leader([u8; 16]),
-    Follower {
-        value: DecodeFutureTyped<BitVec, [u8; 16]>,
-        otp: [u8; 16],
-    },
-}
-
-impl ApplicationKeyShare {
-    fn new(role: Role, value: Array<U8, 16>, vm: &mut dyn Vm<Binary>) -> Result<Self, FError> {
-        let mut otp = [0u8; 16];
-        rand::rng().fill_bytes(&mut otp);
-        match role {
-            Role::Leader => {
-                let masked = vm.mask_private(value, otp).map_err(FError::vm)?;
-                let masked = vm.mask_blind(masked).map_err(FError::vm)?;
-                _ = vm.decode(masked).map_err(FError::vm)?;
-                Ok(Self::Leader(otp))
-            }
-            Role::Follower => {
-                let masked = vm.mask_blind(value).map_err(FError::vm)?;
-                let masked = vm.mask_private(masked, otp).map_err(FError::vm)?;
-                let value = vm.decode(masked).map_err(FError::vm)?;
-                Ok(Self::Follower { value, otp })
-            }
-        }
-    }
-
-    fn finish(self) -> Result<[u8; 16], FError> {
-        match self {
-            Self::Leader(share) => Ok(share),
-            Self::Follower { mut value, otp } => {
-                let mut share = value
-                    .try_recv()
-                    .map_err(FError::vm)?
-                    .ok_or_else(|| FError::state("application key share is not ready"))?;
-                share.iter_mut().zip(otp).for_each(|(a, b)| *a ^= b);
-                Ok(share)
-            }
-        }
+    /// Returns the application key and IV output references allocated by the
+    /// key schedule, before their values have been computed.
+    pub fn allocated_application_keys(&self) -> Result<ApplicationKeys, FError> {
+        self.allocated_application_keys
+            .ok_or_else(|| FError::state("application keys are not allocated"))
     }
 }
 
@@ -544,7 +491,6 @@ mod tests {
             (
                 Option<HandshakeKeys>,
                 ([u8; 16], [u8; 12], [u8; 16], [u8; 12]),
-                ([u8; 16], [u8; 16]),
             ),
             Box<dyn std::error::Error>,
         > {
@@ -593,9 +539,7 @@ mod tests {
                 let civ = civ_fut.try_recv().unwrap().unwrap();
                 let skey = skey_fut.try_recv().unwrap().unwrap();
                 let siv = siv_fut.try_recv().unwrap().unwrap();
-                let key_shares = ks.application_key_shares().unwrap();
-
-                (hs_keys, (ckey, civ, skey, siv), key_shares)
+                (hs_keys, (ckey, civ, skey, siv))
             }
             .await;
 
@@ -639,15 +583,6 @@ mod tests {
         let app_keys_leader = out_leader.1;
         let app_keys_follower = out_follower.1;
         assert_eq!(app_keys_leader, app_keys_follower);
-
-        let (leader_client_share, leader_server_share) = out_leader.2;
-        let (follower_client_share, follower_server_share) = out_follower.2;
-        let client_key_from_shares =
-            std::array::from_fn(|i| leader_client_share[i] ^ follower_client_share[i]);
-        let server_key_from_shares =
-            std::array::from_fn(|i| leader_server_share[i] ^ follower_server_share[i]);
-        assert_eq!(client_key_from_shares, app_keys_leader.0);
-        assert_eq!(server_key_from_shares, app_keys_leader.2);
 
         assert_eq!(
             app_keys_leader,

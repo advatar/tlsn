@@ -125,6 +125,7 @@ impl MpcTlsFollower {
             let pms = ke.alloc(vm)?;
             let PrfOutput { keys, cf_vd, sf_vd } = prf.alloc(vm, pms)?;
             tls13.alloc(vm, pms)?;
+            let tls13_application_keys = tls13.allocated_application_keys()?;
             record_layer.set_keys(
                 keys.client_write_key,
                 keys.client_iv,
@@ -142,6 +143,7 @@ impl MpcTlsFollower {
                 self.config.max_sent,
                 self.config.max_recv_online,
                 self.config.max_recv,
+                tls13_application_keys,
             )?;
 
             (keys, cf_vd, sf_vd, server_write_mac_key)
@@ -404,15 +406,9 @@ impl MpcTlsFollower {
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
 
-                    let (client_share, server_share) = tls13
+                    tls13
                         .set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash)
                         .await?;
-                    record_layer.prepare_tls13_keys(&mut *vm, client_share, server_share)?;
-                    debug!("TLS 1.3 application key shares assigned to record layer");
-                    vm.execute_all(&mut self.ctx)
-                        .await
-                        .map_err(MpcTlsError::hs)?;
-                    debug!("TLS 1.3 application key-install circuits executed");
                     drop(vm);
                     record_layer.setup_tls13(&mut self.ctx).await?;
                     debug!("TLS 1.3 application record layer is ready");

@@ -173,6 +173,7 @@ impl MpcTlsLeader {
         let pms = ke.alloc(&mut (*vm_lock))?;
         let PrfOutput { keys, cf_vd, sf_vd } = prf.alloc(&mut (*vm_lock), pms)?;
         tls13.alloc(&mut (*vm_lock), pms)?;
+        let tls13_application_keys = tls13.allocated_application_keys()?;
         record_layer.set_keys(
             keys.client_write_key,
             keys.client_iv,
@@ -190,6 +191,7 @@ impl MpcTlsLeader {
             self.config.max_sent,
             self.config.max_recv_online,
             self.config.max_recv,
+            tls13_application_keys,
         )?;
 
         let keys: SessionKeys = SessionKeys {
@@ -841,14 +843,10 @@ impl Backend for MpcTlsLeader {
             let mut vm = vm
                 .try_lock()
                 .map_err(|_| MpcTlsError::hs("VM lock is held"))?;
-            let (client_share, server_share) = tls13
+            tls13
                 .set_handshake_hash(ctx, &mut *vm, hash)
                 .await
                 .map_err(MpcTlsError::hs)?;
-            record_layer.prepare_tls13_keys(&mut *vm, client_share, server_share)?;
-            debug!("TLS 1.3 application key shares assigned to record layer");
-            vm.execute_all(ctx).await.map_err(MpcTlsError::hs)?;
-            debug!("TLS 1.3 application key-install circuits executed");
             drop(vm);
             record_layer.setup_tls13(ctx).await?;
             debug!("TLS 1.3 application record layer is ready");
