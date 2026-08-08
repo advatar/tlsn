@@ -6,7 +6,8 @@
 - [x] Add a reproducible Tamarin model for joint TLS 1.3 application-record protection.
 - [x] Machine-check record-layer executability, key secrecy, authenticated release, replay resistance, and nonce-uniqueness lemmas.
 - [x] Extend the symbolic model through certificate/handshake authentication, transcript agreement, and commitment-based presentation acceptance.
-- [ ] Extend the symbolic model through concrete TLS 1.3 HKDF details.
+- [x] Add a symbolic TLS 1.3 HKDF/Finished/application-secret boundary model.
+- [ ] Prove concrete TLS 1.3 HKDF/parser refinement against the Rust implementation.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.
 - [x] Specify a review-ready computational proof target for the authenticated-release capsule and identify required construction hardening.
 - [x] Add Lean specifications and Kani implementation checks for typed epochs, sequence ownership, exhaustion, and nonce derivation.
@@ -15,7 +16,7 @@
 - [x] Provide one-command reproduction of formal results and core validation-table entries; Docker interoperability remains a separate explicit suite.
 - [ ] Draft a publication-quality paper whose claims link to exact proof artifacts and whose limitations distinguish symbolic, computational, and implementation assurance.
 - [x] Create the initial cited manuscript, claim--evidence matrix, bibliography, and deterministic HTML/LaTeX build.
-- [ ] Run all proof, build, test, bibliography, and paper-render checks; commit only verified artifacts.
+- [x] Run all proof, build, test, bibliography, and paper-render checks; commit only verified artifacts.
 
 ## CR-011 — sound TLS 1.3 joint record protection
 
