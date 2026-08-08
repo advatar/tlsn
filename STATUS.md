@@ -14,7 +14,7 @@
 - [x] Establish executable equivalence checks between MPC AES/GHASH operations and the TLS 1.3 AES-GCM reference semantics.
 - [x] Add adversarial tests for malformed, replayed, reordered, cross-epoch, and prematurely released records.
 - [x] Provide one-command reproduction of formal results and core validation-table entries; Docker interoperability remains a separate explicit suite.
-- [ ] Draft a publication-quality paper whose claims link to exact proof artifacts and whose limitations distinguish symbolic, computational, and implementation assurance.
+- [x] Draft a publication-quality paper whose claims link to exact proof artifacts and whose limitations distinguish symbolic, computational, and implementation assurance.
 - [x] Create the initial cited manuscript, claim--evidence matrix, bibliography, and deterministic HTML/LaTeX build.
 - [x] Run all proof, build, test, bibliography, and paper-render checks; commit only verified artifacts.
 
