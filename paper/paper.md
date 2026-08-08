@@ -15,14 +15,14 @@ abstract: |
   empirical validation. Tamarin models prove five record-layer properties,
   five handshake/transcript properties, and a bounded selective-disclosure
   observational-equivalence property under explicit abstractions.
-  An initial record-layer model proves
-  properties under ideal AEAD and MPC assumptions. Lean proves sequence and
+  The record-layer properties are proved under ideal AEAD and MPC assumptions.
+  Lean proves sequence and
   nonce invariants, and Kani checks the corresponding Rust functions over all
   64-bit sequences and 96-bit IVs. The analysis also identifies a limitation:
   authenticated plaintext release does not by itself imply equality with the
-  tag submitted to the verifier. Full handshake, transcript, selective-
-  disclosure, MPC-composition, and implementation-refinement proofs remain
-  open; consequently we do not claim a fully formally verified implementation.
+  tag submitted to the verifier. Concrete HKDF/parser refinement, MPC-
+  composition, and implementation-refinement proofs remain open; consequently
+  we do not claim a fully formally verified implementation.
 geometry: margin=1in
 fontsize: 10pt
 link-citations: true
@@ -136,7 +136,7 @@ binding. The model treats the concrete TLS 1.3 HKDF and certificate parser as
 abstract interfaces; it therefore does not establish those implementation
 details.
 
-A fourth model isolates the TLS 1.3 key-schedule boundary. It represents
+A third model isolates the TLS 1.3 key-schedule boundary. It represents
 HKDF-Extract and HKDF-Expand-Label as private symbolic constructors, derives
 the traffic secret using a labeled transcript context, and requires Finished
 verification before application-secret installation. Four lemmas close: an
@@ -145,7 +145,7 @@ application-secret installation, and transcript-context binding. These are
 protocol-boundary claims; they do not replace test-vector or bit-level
 refinement proofs for the production HKDF code.
 
-A third, deliberately minimal, diff model checks that changing unrevealed
+A fourth, deliberately minimal, diff model checks that changing unrevealed
 bytes while keeping the public projection fixed is observationally invisible.
 This is a boundary test for the disclosure interface, not a proof of the
 production circuit or serialization format.
@@ -200,7 +200,7 @@ fixture and core validation are run by `./formal/validate.sh`.
 | Epoch sequences do not wrap or repeat locally | Lean and Kani | Concurrent whole-program refinement |
 | Fixed-IV nonce derivation is injective | Lean and Kani | Circuit/reference equivalence |
 | Full proof transcript is authentic | Tamarin handshake/transcript model plus end-to-end tests | Concrete HKDF/parser refinement |
-| Selective disclosure is private | Existing protocol tests | Leakage function and equivalence proof |
+| Selective disclosure preserves the public projection | Minimal Tamarin observational-equivalence model | Production leakage function and serialization refinement |
 
 The interoperation result is evidence of compatibility, not a security proof;
 the server implementations are honest test peers and do not exercise the
@@ -209,9 +209,9 @@ malicious-party experiments.
 # Limitations and research agenda
 
 The strongest missing result is a composable malicious-security theorem for
-the concrete MPZ protocols and release capsule. The symbolic model does not yet
-cover the TLS handshake, X.509 validation, transcript commitments, proof
-serialization, selective disclosure, malicious verifier, side channels,
+the concrete MPZ protocols and release capsule. The symbolic models do not yet
+cover concrete TLS handshake HKDF/parser refinement, X.509 validation,
+production transcript commitments, proof serialization, malicious verifier, side channels,
 concurrency, or crashes. AES and GHASH circuit equivalence is tested but not
 machine-proved. The tag-share capsule is nonstandard and should preferably be
 replaced by an explicitly context-bound release key derived inside MPC.
