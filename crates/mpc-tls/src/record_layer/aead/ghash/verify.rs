@@ -88,6 +88,20 @@ fn seal_release(tag_share: &[u8; 16], release: Vec<u8>) -> ReleaseCapsule {
     }
 }
 
+fn prepare_release_message(
+    tag_shares: &[TagShare],
+    releases: Vec<Option<Vec<u8>>>,
+) -> (Vec<Option<TagShare>>, Vec<Option<ReleaseCapsule>>) {
+    tag_shares
+        .iter()
+        .zip(releases)
+        .map(|(share, release)| match release {
+            Some(release) => (None, Some(seal_release(&share.0, release))),
+            None => (Some(share.clone()), None),
+        })
+        .unzip()
+}
+
 fn open_release(
     expected_tag_share: &[u8; 16],
     capsule: ReleaseCapsule,
@@ -150,8 +164,10 @@ impl Task for VerifyTags {
         let io = ctx.io_mut();
         match role {
             Role::Leader => {
-                let (peer_tag_shares, capsules): (Vec<TagShare>, Vec<Option<ReleaseCapsule>>) =
-                    io.expect_next().await.map_err(AeadError::tag)?;
+                let (peer_tag_shares, capsules): (
+                    Vec<Option<TagShare>>,
+                    Vec<Option<ReleaseCapsule>>,
+                ) = io.expect_next().await.map_err(AeadError::tag)?;
 
                 if peer_tag_shares.len() != tag_shares.len() || capsules.len() != tag_shares.len() {
                     return Err(AeadError::tag("follower tag shares length mismatch"));
@@ -172,20 +188,25 @@ impl Task for VerifyTags {
                         .try_into()
                         .map_err(|_| AeadError::tag("invalid TLS tag length"))?;
                     if let Some(capsule) = capsule {
+                        if follower_share.is_some() {
+                            return Err(AeadError::tag(
+                                "follower disclosed a gated TLS 1.3 tag share",
+                            ));
+                        }
                         released.push(open_release(&expected_follower_share, capsule)?);
-                    } else if expected_follower_share != follower_share.0 {
-                        return Err(AeadError::tag("failed to verify tags"));
+                    } else {
+                        let follower_share = follower_share
+                            .ok_or_else(|| AeadError::tag("follower tag share is missing"))?;
+                        if expected_follower_share != follower_share.0 {
+                            return Err(AeadError::tag("failed to verify tags"));
+                        }
                     }
                 }
                 Ok(released)
             }
             Role::Follower => {
-                let capsules = tag_shares
-                    .iter()
-                    .zip(releases)
-                    .map(|(share, release)| release.map(|release| seal_release(&share.0, release)))
-                    .collect::<Vec<_>>();
-                io.send((tag_shares, capsules))
+                let (peer_tag_shares, capsules) = prepare_release_message(&tag_shares, releases);
+                io.send((peer_tag_shares, capsules))
                     .await
                     .map_err(AeadError::tag)?;
                 Ok(Vec::new())
@@ -200,7 +221,8 @@ impl Task for VerifyTags {
 
 #[cfg(test)]
 mod tests {
-    use super::{open_release, seal_release};
+    use super::{open_release, prepare_release_message, seal_release};
+    use crate::record_layer::aead::ghash::TagShare;
 
     #[test]
     fn authenticated_release_opens_only_with_the_expected_tag_share() {
@@ -213,5 +235,17 @@ mod tests {
         let mut wrong_share = tag_share;
         wrong_share[0] ^= 1;
         assert!(open_release(&wrong_share, capsule).is_err());
+    }
+
+    #[test]
+    fn gated_release_withholds_the_raw_tag_share() {
+        let tag_shares = vec![TagShare([7u8; 16]), TagShare([9u8; 16])];
+        let (peer_tag_shares, capsules) =
+            prepare_release_message(&tag_shares, vec![Some(vec![42u8; 97]), None]);
+
+        assert!(peer_tag_shares[0].is_none());
+        assert!(capsules[0].is_some());
+        assert_eq!(peer_tag_shares[1].as_ref().unwrap().0, [9u8; 16]);
+        assert!(capsules[1].is_none());
     }
 }
