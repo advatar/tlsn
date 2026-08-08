@@ -2,9 +2,10 @@
 
 ## CR-012 — TLS 1.3 formal verification and scientific paper
 
-- [ ] Define the protocol boundary, adversary model, security claims, assumptions, and trusted computing base.
-- [ ] Add a reproducible Tamarin model for joint TLS 1.3 application-record protection.
-- [ ] Machine-check secrecy, authenticated release, agreement, replay resistance, and nonce-uniqueness lemmas.
+- [x] Define the initial protocol boundary, adversary model, security claims, assumptions, and trusted computing base.
+- [x] Add a reproducible Tamarin model for joint TLS 1.3 application-record protection.
+- [x] Machine-check record-layer executability, key secrecy, authenticated release, replay resistance, and nonce-uniqueness lemmas.
+- [ ] Extend the symbolic model through handshake authentication, transcript agreement, and selective-disclosure leakage.
 - [ ] Specify the computational security argument for the authenticated-release capsule and identify any construction changes it requires.
 - [ ] Add machine-checked implementation invariants for typed epochs, sequence ownership, and nonce derivation.
 - [ ] Establish executable equivalence checks between MPC AES/GHASH operations and the TLS 1.3 AES-GCM reference semantics.

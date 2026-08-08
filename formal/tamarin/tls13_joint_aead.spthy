@@ -1,0 +1,133 @@
+theory Tls13JointAead
+begin
+
+builtins: symmetric-encryption
+
+/*
+ * Symbolic abstraction of the TLSNotary TLS 1.3 application-record path.
+ *
+ * aead(k, dir, gen, seq, aad, plaintext) is an opaque ciphertext. The
+ * corresponding tag is auth(k, dir, gen, seq, aad, ciphertext). The MPC
+ * verifier creates a fresh additive tag sharing: the malicious leader learns
+ * leader_share while follower_share is used only as the release-capsule key.
+ * The leader can recover follower_share from the public tag exactly when it
+ * supplies the authentic tag for that record.
+ */
+functions:
+  aead/6,
+  plain/6 [private],
+  auth/6,
+  fshare/2,
+  commit/2
+
+/* A session installs one uncompromised server application traffic key. */
+rule InstallSession:
+  [ Fr(~sid), Fr(~server_key) ]
+  --[ SessionInstalled(~sid, ~server_key) ]->
+  [ !ServerKey(~sid, ~server_key), ReadSlot(~sid, 'server', '0', '0') ]
+
+/* The server emits the unique record for the current read sequence. */
+rule ServerSendsRecord:
+  let ciphertext = aead(key, direction, generation, sequence, ~aad, ~plaintext)
+      tag = auth(key, direction, generation, sequence, ~aad, ciphertext)
+      authenticated_plaintext = plain(key, direction, generation, sequence,
+                                      ~aad, ciphertext)
+  in
+  [ !ServerKey(sid, key),
+    ReadSlot(sid, direction, generation, sequence),
+    Fr(~plaintext), Fr(~aad) ]
+  --[ ServerAuthenticated(sid, direction, generation, sequence,
+                          ~aad, ciphertext, tag, authenticated_plaintext),
+      NonceUsed(key, direction, generation, sequence) ]->
+  [ Out(<sid, direction, generation, sequence, ~aad, ciphertext, tag>),
+    VerifySlot(sid, direction, generation, sequence) ]
+
+/*
+ * The network/prover chooses the ciphertext and claimed public tag. The
+ * idealized joint computation derives shares of the authentic tag for those
+ * exact inputs. The follower withholds follower_share and sends only a
+ * capsule containing its fresh plaintext mask.
+ */
+rule JointVerifyAndSeal:
+  let authentic_tag = auth(key, direction, generation, sequence, aad, ciphertext)
+      follower_share = fshare(authentic_tag, ~leader_share)
+      capsule = senc(<~release_mask, commit(follower_share, ~release_mask)>,
+                     follower_share)
+      candidate_plaintext = plain(key, direction, generation, sequence,
+                                  aad, ciphertext)
+  in
+  [ !ServerKey(sid, key),
+    VerifySlot(sid, direction, generation, sequence),
+    In(<sid, direction, generation, sequence, aad, ciphertext, claimed_tag>),
+    Fr(~leader_share), Fr(~release_mask) ]
+  --[ VerificationAttempt(sid, direction, generation, sequence,
+                          aad, ciphertext, claimed_tag),
+      LeaderTagShare(sid, claimed_tag, ~leader_share) ]->
+  [ Out(<~leader_share, capsule,
+         senc(candidate_plaintext, ~release_mask)>),
+    PendingRelease(sid, direction, generation, sequence,
+                   aad, ciphertext, claimed_tag,
+                   candidate_plaintext, ~release_mask) ]
+
+/*
+ * Sending the exact fresh mask back represents successful capsule opening.
+ * A Dolev--Yao adversary can derive it only with the capsule key. For the
+ * protocol tag, xor(claimed_tag, leader_share) is that key exactly when the
+ * claimed tag is authentic (or the adversary already knows an authentic tag
+ * for the same ciphertext).
+ */
+rule ReleasePlaintext:
+  [ PendingRelease(sid, direction, generation, sequence,
+                   aad, ciphertext, claimed_tag, plaintext, release_mask),
+    In(release_mask) ]
+  --[ PlaintextReleased(sid, direction, generation, sequence,
+                        aad, ciphertext, claimed_tag, plaintext) ]->
+  [ Out(plaintext) ]
+
+/* Explicit compromise scopes the secrecy/authentication claims. */
+rule CompromiseServerKey:
+  [ !ServerKey(sid, key) ]
+  --[ ServerKeyCompromised(sid) ]->
+  [ Out(key) ]
+
+lemma honest_execution:
+  exists-trace
+  "Ex sid direction generation sequence aad ciphertext tag plaintext #i #j.
+     ServerAuthenticated(sid, direction, generation, sequence,
+                         aad, ciphertext, tag, plaintext) @ #i
+   & PlaintextReleased(sid, direction, generation, sequence,
+                       aad, ciphertext, tag, plaintext) @ #j
+   & #i < #j"
+
+lemma application_key_secrecy:
+  "All sid key #i.
+     SessionInstalled(sid, key) @ #i
+   & not (Ex #r. ServerKeyCompromised(sid) @ #r)
+   ==> not (Ex #j. K(key) @ #j)"
+
+lemma authenticated_plaintext_release:
+  "All sid direction generation sequence aad ciphertext tag plaintext #i.
+     PlaintextReleased(sid, direction, generation, sequence,
+                       aad, ciphertext, tag, plaintext) @ #i
+   & not (Ex #r. ServerKeyCompromised(sid) @ #r & #r < #i)
+   ==> (Ex authentic_tag #j.
+              ServerAuthenticated(sid, direction, generation, sequence,
+                                   aad, ciphertext, authentic_tag, plaintext) @ #j
+              & #j < #i)"
+
+lemma nonce_tuple_unique:
+  "All key direction generation sequence #i #j.
+     NonceUsed(key, direction, generation, sequence) @ #i
+   & NonceUsed(key, direction, generation, sequence) @ #j
+   ==> #i = #j"
+
+lemma read_slot_single_use:
+  "All sid direction generation sequence aad1 ciphertext1 tag1
+       aad2 ciphertext2 tag2 #i #j.
+     VerificationAttempt(sid, direction, generation, sequence,
+                         aad1, ciphertext1, tag1) @ #i
+   & VerificationAttempt(sid, direction, generation, sequence,
+                         aad2, ciphertext2, tag2) @ #j
+   ==> #i = #j"
+
+end
