@@ -1,5 +1,18 @@
 # STATUS
 
+## CR-012 — TLS 1.3 formal verification and scientific paper
+
+- [ ] Define the protocol boundary, adversary model, security claims, assumptions, and trusted computing base.
+- [ ] Add a reproducible Tamarin model for joint TLS 1.3 application-record protection.
+- [ ] Machine-check secrecy, authenticated release, agreement, replay resistance, and nonce-uniqueness lemmas.
+- [ ] Specify the computational security argument for the authenticated-release capsule and identify any construction changes it requires.
+- [ ] Add machine-checked implementation invariants for typed epochs, sequence ownership, and nonce derivation.
+- [ ] Establish executable equivalence checks between MPC AES/GHASH operations and the TLS 1.3 AES-GCM reference semantics.
+- [ ] Add adversarial tests for malformed, replayed, reordered, cross-epoch, and prematurely released records.
+- [ ] Provide one-command reproduction of every formal result and validation table entry.
+- [ ] Draft a publication-quality paper whose claims link to exact proof artifacts and whose limitations distinguish symbolic, computational, and implementation assurance.
+- [ ] Run all proof, build, test, bibliography, and paper-render checks; commit only verified artifacts.
+
 ## CR-011 — sound TLS 1.3 joint record protection
 
 - [x] Step A: remove complete application-traffic-key decoding and disable the unsound local AEAD path.
