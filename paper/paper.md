@@ -12,7 +12,10 @@ abstract: |
   secret-shared and server plaintext is released through a capsule gated by a
   jointly computed GCM tag. We separate assurance into symbolic protocol
   analysis, computational assumptions, machine-checked state invariants, and
-  empirical validation. An initial Tamarin model proves five record-layer
+  empirical validation. Tamarin models prove five record-layer properties,
+  five handshake/transcript properties, and a bounded selective-disclosure
+  observational-equivalence property under explicit abstractions.
+  An initial record-layer model proves
   properties under ideal AEAD and MPC assumptions. Lean proves sequence and
   nonce invariants, and Kani checks the corresponding Rust functions over all
   64-bit sequences and 96-bit IVs. The analysis also identifies a limitation:
@@ -133,6 +136,11 @@ binding. The model treats the concrete TLS 1.3 HKDF and certificate parser as
 abstract interfaces; it therefore does not establish those implementation
 details.
 
+A third, deliberately minimal, diff model checks that changing unrevealed
+bytes while keeping the public projection fixed is observationally invisible.
+This is a boundary test for the disclosure interface, not a proof of the
+production circuit or serialization format.
+
 ## State and implementation invariants
 
 Lean proves that the abstract epoch reservation operation returns the owned
@@ -205,10 +213,14 @@ verified TLSNotary implementation.
 
 # Reproducibility
 
-The repository contains the Tamarin theory, Lean specification, Kani harnesses,
-and `formal/verify.sh`, which fails unless every required symbolic lemma is
-reported as verified. Exact tool versions, artifact hashes, benchmark commands,
-and containerized reproduction remain to be frozen for a paper release.
+The repository contains the Tamarin theories, Lean specification, Kani
+harnesses, and `formal/verify.sh`, which fails unless every required lemma is
+reported as verified. On the reference machine, the wrapper runs Tamarin
+1.12.0, Maude 3.5.1, Lean 4.32.2, and Kani 0.67. The executable validation
+suite reports 27 MPC tests, 22 HMAC tests, 3 core configuration tests, and the
+TLS 1.3 integration fixture; the explicit Docker interoperability suite passes
+nginx (RSA and ECDSA), Apache (RSA), Caddy (RSA), and OpenSSL `s_server`.
+These counts are reproducibility anchors, not a claim of exhaustive coverage.
 
 # Conclusion
 

@@ -4,7 +4,8 @@ set -euo pipefail
 model="formal/tamarin/tls13_joint_aead.spthy"
 proof_output="$(mktemp /tmp/tlsn-tamarin-proof.XXXXXX)"
 handshake_proof_output="$(mktemp /tmp/tlsn-tamarin-handshake-proof.XXXXXX)"
-trap 'rm -f "$proof_output" "$handshake_proof_output"' EXIT
+selective_proof_output="$(mktemp /tmp/tlsn-tamarin-selective-proof.XXXXXX)"
+trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output"' EXIT
 
 lean formal/lean/Tls13Epoch.lean
 cargo kani -p tlsn-mpc-tls --quiet --output-format terse
@@ -49,3 +50,15 @@ done
 
 printf 'verified %d required handshake/transcript Tamarin lemmas\n' \
   "${#handshake_lemmas[@]}"
+
+tamarin-prover --diff --prove --quiet \
+  formal/tamarin/tls13_selective_disclosure.spthy \
+  | tee "$selective_proof_output"
+
+if ! grep -Eq "Observational_equivalence .*verified" \
+  "$selective_proof_output"; then
+  printf 'selective-disclosure observational equivalence was not verified\n' >&2
+  exit 1
+fi
+
+printf 'verified selective-disclosure observational equivalence\n'

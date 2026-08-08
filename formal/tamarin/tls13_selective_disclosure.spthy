@@ -1,0 +1,20 @@
+theory Tls13SelectiveDisclosure
+begin
+
+builtins: hashing
+
+functions:
+  proof_commit/1,
+  public_projection/2
+
+/*
+ * The two diff branches represent two sessions with identical public
+ * projection and lengths but different unrevealed bytes. The commitment is
+ * modeled as an opaque hash. No hidden bytes are sent to the adversary.
+ */
+rule Present:
+  [ Fr(~public_prefix), Fr(~hidden_left), Fr(~hidden_right) ]
+  --[ Disclosure(~public_prefix) ]->
+  [ Out(<~public_prefix, diff(~hidden_left, ~hidden_right)>) ]
+
+end

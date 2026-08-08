@@ -41,6 +41,11 @@ epoch installation, record commitments, and presentation acceptance. It does
 not yet model the concrete TLS 1.3 HKDF transcript or selective-disclosure
 observational equivalence.
 
+`tamarin/tls13_selective_disclosure.spthy` is a minimal observational-
+equivalence model for selective disclosure: the two diff branches share the
+same public projection while differing only in unrevealed bytes. It is a
+sanity-check boundary, not yet the concrete transcript leakage model.
+
 The reproduction wrapper checks five additional lemmas from this model:
 handshake executability and agreement, application-epoch agreement,
 presentation agreement, and server-identity binding.
