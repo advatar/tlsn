@@ -5,7 +5,8 @@ model="formal/tamarin/tls13_joint_aead.spthy"
 proof_output="$(mktemp /tmp/tlsn-tamarin-proof.XXXXXX)"
 handshake_proof_output="$(mktemp /tmp/tlsn-tamarin-handshake-proof.XXXXXX)"
 selective_proof_output="$(mktemp /tmp/tlsn-tamarin-selective-proof.XXXXXX)"
-trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output"' EXIT
+schedule_proof_output="$(mktemp /tmp/tlsn-tamarin-schedule-proof.XXXXXX)"
+trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output" "$schedule_proof_output"' EXIT
 
 lean formal/lean/Tls13Epoch.lean
 cargo kani -p tlsn-mpc-tls --quiet --output-format terse
@@ -62,3 +63,24 @@ if ! grep -Eq "Observational_equivalence .*verified" \
 fi
 
 printf 'verified selective-disclosure observational equivalence\n'
+
+tamarin-prover --prove --quiet \
+  formal/tamarin/tls13_key_schedule.spthy \
+  | tee "$schedule_proof_output"
+
+schedule_lemmas=(
+  finished_is_executable
+  finished_acceptance_requires_emission
+  application_secret_requires_finished
+  application_secret_context_is_transcript_bound
+)
+
+for lemma in "${schedule_lemmas[@]}"; do
+  if ! grep -Eq "^[[:space:]]+${lemma} .*: verified" "$schedule_proof_output"; then
+    printf 'required key-schedule Tamarin lemma was not verified: %s\n' "$lemma" >&2
+    exit 1
+  fi
+done
+
+printf 'verified %d TLS 1.3 key-schedule/Finished lemmas\n' \
+  "${#schedule_lemmas[@]}"

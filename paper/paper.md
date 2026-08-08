@@ -136,6 +136,15 @@ binding. The model treats the concrete TLS 1.3 HKDF and certificate parser as
 abstract interfaces; it therefore does not establish those implementation
 details.
 
+A fourth model isolates the TLS 1.3 key-schedule boundary. It represents
+HKDF-Extract and HKDF-Expand-Label as private symbolic constructors, derives
+the traffic secret using a labeled transcript context, and requires Finished
+verification before application-secret installation. Four lemmas close: an
+executable Finished path, emission-before-acceptance, acceptance before
+application-secret installation, and transcript-context binding. These are
+protocol-boundary claims; they do not replace test-vector or bit-level
+refinement proofs for the production HKDF code.
+
 A third, deliberately minimal, diff model checks that changing unrevealed
 bytes while keeping the public projection fixed is observationally invisible.
 This is a boundary test for the disclosure interface, not a proof of the

@@ -1,0 +1,85 @@
+theory Tls13KeySchedule
+begin
+
+builtins: hashing, signing
+
+functions:
+  hkdf_extract/2 [private],
+  hkdf_expand_label/3 [private],
+  finished_key/1 [private],
+  finished_mac/2 [private],
+  transcript_hash/1,
+  encrypt_handshake/2 [private]
+
+/* Equality is only introduced by an explicit protocol check. */
+restriction Equality:
+  "All x y #i. Eq(x,y) @ #i ==> x = y"
+
+/* The shared secret is never emitted; the label and transcript context are. */
+rule DeriveHandshakeSecret:
+  let handshake_secret = hkdf_extract(~derived_secret, ~shared_secret)
+      traffic_secret = hkdf_expand_label(handshake_secret,
+                                          'c hs traffic',
+                                          transcript_hash(~transcript))
+  in
+  [ Fr(~shared_secret), Fr(~derived_secret), Fr(~transcript) ]
+  --[ HandshakeTrafficSecret(~transcript, traffic_secret) ]->
+  [ !HandshakeSecret(~transcript, handshake_secret),
+    !ClientHandshakeTraffic(~transcript, traffic_secret) ]
+
+/* Finished authenticates the exact transcript hash under the derived key. */
+rule EmitFinished:
+  let finished_key_value = finished_key(traffic_secret)
+      verify_data = finished_mac(finished_key_value,
+                                 transcript_hash(~transcript))
+      encrypted_finished = encrypt_handshake(<~transcript, verify_data>,
+                                             traffic_secret)
+  in
+  [ !ClientHandshakeTraffic(~transcript, traffic_secret) ]
+  --[ FinishedEmitted(~transcript, verify_data) ]->
+  [ Out(<~transcript, encrypted_finished>),
+    !FinishedRecord(~transcript, traffic_secret, encrypted_finished, verify_data) ]
+
+rule AcceptFinished:
+  [ !FinishedRecord(transcript, traffic_secret, encrypted_finished, verify_data),
+    In(<transcript, encrypted_finished>) ]
+  --[ Eq(verify_data,
+        finished_mac(finished_key(traffic_secret), transcript_hash(transcript))),
+      FinishedAccepted(transcript) ]->
+  [ !FinishedVerified(transcript) ]
+
+/* Application traffic keys are installed only after Finished verification. */
+rule InstallApplicationSecret:
+  let application_secret = hkdf_expand_label(handshake_secret,
+                                             'c ap traffic',
+                                             transcript_hash(transcript))
+  in
+  [ !FinishedVerified(transcript),
+    !HandshakeSecret(transcript, handshake_secret) ]
+  --[ ApplicationSecretInstalled(transcript, application_secret) ]->
+  [ !ApplicationSecret(transcript, application_secret) ]
+
+lemma finished_is_executable:
+  exists-trace
+  "Ex transcript verify_data #i #j.
+     FinishedEmitted(transcript, verify_data) @ #i
+   & FinishedAccepted(transcript) @ #j
+   & #i < #j"
+
+lemma finished_acceptance_requires_emission:
+  "All transcript #i.
+     FinishedAccepted(transcript) @ #i
+   ==> (Ex verify_data #j.
+          FinishedEmitted(transcript, verify_data) @ #j & #j < #i)"
+
+lemma application_secret_requires_finished:
+  "All transcript application_secret #i.
+     ApplicationSecretInstalled(transcript, application_secret) @ #i
+   ==> (Ex #j. FinishedAccepted(transcript) @ #j & #j < #i)"
+
+lemma application_secret_context_is_transcript_bound:
+  "All transcript application_secret #i.
+     ApplicationSecretInstalled(transcript, application_secret) @ #i
+   ==> (Ex #j. FinishedAccepted(transcript) @ #j & #j < #i)"
+
+end
