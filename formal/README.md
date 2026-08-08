@@ -64,6 +64,9 @@ TLS 1.3 fixture. Docker interoperability remains an explicit separate suite.
 Run that suite with `./formal/interop.sh`; it covers nginx RSA, nginx ECDSA,
 Apache RSA, Caddy RSA, and OpenSSL `s_server`.
 
+The complete command matrix and expected evidence are recorded in
+`formal/REPRODUCIBILITY.md`.
+
 ## Epoch and nonce specification
 
 `lean/Tls13Epoch.lean` proves that successful sequence reservation returns the

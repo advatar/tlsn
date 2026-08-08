@@ -230,6 +230,9 @@ suite reports 27 MPC tests, 22 HMAC tests, 3 core configuration tests, and the
 TLS 1.3 integration fixture; the explicit Docker interoperability suite passes
 nginx (RSA and ECDSA), Apache (RSA), Caddy (RSA), and OpenSSL `s_server`.
 These counts are reproducibility anchors, not a claim of exhaustive coverage.
+The full command matrix, including the RFC-derived TLS 1.3 HKDF vectors in
+`crates/components/hmac-sha256/src/kdf/expand.rs`, is recorded in
+`formal/REPRODUCIBILITY.md`.
 
 # Conclusion
 
