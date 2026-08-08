@@ -575,6 +575,63 @@ fn unpad_tls13(payload: &mut Vec<u8>) -> Result<ContentType, MpcTlsError> {
     }
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::{make_tls13_nonce, Epoch, ReadEpoch, WriteEpoch};
+
+    #[kani::proof]
+    fn write_reservation_returns_owned_sequence_and_advances_once() {
+        let next_sequence: u64 = kani::any();
+        kani::assume(next_sequence < u64::MAX);
+        let mut epoch = WriteEpoch::new(Epoch::Application, 7, (), ());
+        epoch.next_sequence = next_sequence;
+
+        let reserved = epoch.reserve_sequence().unwrap();
+
+        assert_eq!(reserved, next_sequence);
+        assert_eq!(epoch.next_sequence, next_sequence + 1);
+        assert_eq!(epoch.generation, 7);
+    }
+
+    #[kani::proof]
+    fn read_reservation_returns_owned_sequence_and_advances_once() {
+        let next_sequence: u64 = kani::any();
+        kani::assume(next_sequence < u64::MAX);
+        let mut epoch = ReadEpoch::new(Epoch::Application, 11, (), ());
+        epoch.next_sequence = next_sequence;
+
+        let reserved = epoch.reserve_sequence().unwrap();
+
+        assert_eq!(reserved, next_sequence);
+        assert_eq!(epoch.next_sequence, next_sequence + 1);
+        assert_eq!(epoch.generation, 11);
+    }
+
+    #[kani::proof]
+    fn exhausted_epochs_reject_without_wrapping() {
+        let mut write = WriteEpoch::new(Epoch::Application, 0, (), ());
+        let mut read = ReadEpoch::new(Epoch::Application, 0, (), ());
+        write.next_sequence = u64::MAX;
+        read.next_sequence = u64::MAX;
+
+        assert!(write.reserve_sequence().is_err());
+        assert!(read.reserve_sequence().is_err());
+        assert_eq!(write.next_sequence, u64::MAX);
+        assert_eq!(read.next_sequence, u64::MAX);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn nonce_derivation_is_injective_for_a_fixed_iv() {
+        let iv: [u8; 12] = kani::any();
+        let first: u64 = kani::any();
+        let second: u64 = kani::any();
+        kani::assume(first != second);
+
+        assert_ne!(make_tls13_nonce(iv, first), make_tls13_nonce(iv, second));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{decrypt_tls13_record, encrypt_tls13_record, ReadEpoch, Tls13KeyState, WriteEpoch};

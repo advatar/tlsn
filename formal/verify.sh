@@ -5,6 +5,9 @@ model="formal/tamarin/tls13_joint_aead.spthy"
 proof_output="$(mktemp /tmp/tlsn-tamarin-proof.XXXXXX)"
 trap 'rm -f "$proof_output"' EXIT
 
+lean formal/lean/Tls13Epoch.lean
+cargo kani -p tlsn-mpc-tls --quiet --output-format terse
+
 tamarin-prover --prove --quiet "$model" | tee "$proof_output"
 
 lemmas=(
