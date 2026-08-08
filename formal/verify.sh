@@ -74,6 +74,7 @@ schedule_lemmas=(
   finished_acceptance_requires_emission
   application_secret_requires_finished
   application_secret_context_is_transcript_bound
+  application_secret_has_tls13_label_and_context
 )
 
 for lemma in "${schedule_lemmas[@]}"; do

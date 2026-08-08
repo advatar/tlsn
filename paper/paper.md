@@ -151,9 +151,10 @@ details.
 A third model isolates the TLS 1.3 key-schedule boundary. It represents
 HKDF-Extract and HKDF-Expand-Label as private symbolic constructors, derives
 the traffic secret using a labeled transcript context, and requires Finished
-verification before application-secret installation. Four lemmas close: an
+verification before application-secret installation. Five lemmas close: an
 executable Finished path, emission-before-acceptance, acceptance before
-application-secret installation, and transcript-context binding. These are
+application-secret installation, transcript-context binding, and exact
+`c ap traffic` label/context formation. These are
 protocol-boundary claims; they do not replace test-vector or bit-level
 refinement proofs for the production HKDF code.
 

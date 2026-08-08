@@ -56,7 +56,7 @@ rule InstallApplicationSecret:
   in
   [ !FinishedVerified(transcript),
     !HandshakeSecret(transcript, handshake_secret) ]
-  --[ ApplicationSecretInstalled(transcript, application_secret) ]->
+  --[ ApplicationSecretInstalled(transcript, handshake_secret, application_secret) ]->
   [ !ApplicationSecret(transcript, application_secret) ]
 
 lemma finished_is_executable:
@@ -73,13 +73,20 @@ lemma finished_acceptance_requires_emission:
           FinishedEmitted(transcript, verify_data) @ #j & #j < #i)"
 
 lemma application_secret_requires_finished:
-  "All transcript application_secret #i.
-     ApplicationSecretInstalled(transcript, application_secret) @ #i
+  "All transcript handshake_secret application_secret #i.
+     ApplicationSecretInstalled(transcript, handshake_secret, application_secret) @ #i
    ==> (Ex #j. FinishedAccepted(transcript) @ #j & #j < #i)"
 
 lemma application_secret_context_is_transcript_bound:
-  "All transcript application_secret #i.
-     ApplicationSecretInstalled(transcript, application_secret) @ #i
+  "All transcript handshake_secret application_secret #i.
+     ApplicationSecretInstalled(transcript, handshake_secret, application_secret) @ #i
    ==> (Ex #j. FinishedAccepted(transcript) @ #j & #j < #i)"
+
+lemma application_secret_has_tls13_label_and_context:
+  "All transcript handshake_secret application_secret #i.
+     ApplicationSecretInstalled(transcript, handshake_secret, application_secret) @ #i
+   ==> application_secret =
+         hkdf_expand_label(handshake_secret, 'c ap traffic',
+                           transcript_hash(transcript))"
 
 end

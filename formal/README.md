@@ -50,8 +50,8 @@ sanity-check boundary, not yet the concrete transcript leakage model.
 
 `tamarin/tls13_key_schedule.spthy` adds a symbolic TLS 1.3 key-schedule
 boundary. It models HKDF-Extract and HKDF-Expand-Label as private constructors,
-binds Finished verification to the transcript hash, and proves four
-execution/order properties. This is not a bit-level proof of the Rust HKDF
+binds Finished verification to the transcript hash, and proves five
+execution/order/context properties. This is not a bit-level proof of the Rust HKDF
 implementation.
 
 The reproduction wrapper checks five additional lemmas from this model:
