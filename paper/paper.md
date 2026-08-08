@@ -243,7 +243,7 @@ The repository contains the Tamarin theories, Lean specification, Kani
 harnesses, and `formal/verify.sh`, which fails unless every required lemma is
 reported as verified. On the reference machine, the wrapper runs Tamarin
 1.12.0, Maude 3.5.1, Lean 4.32.2, and Kani 0.67. The executable validation
-suite reports 27 MPC tests, 22 HMAC tests, 3 core configuration tests, and the
+suite reports 31 MPC tests, 22 HMAC tests, 3 core configuration tests, and the
 TLS 1.3 integration fixture; the explicit Docker interoperability suite passes
 nginx (RSA and ECDSA), Apache (RSA), Caddy (RSA), and OpenSSL `s_server`.
 These counts are reproducibility anchors, not a claim of exhaustive coverage.
