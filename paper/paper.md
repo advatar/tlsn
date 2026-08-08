@@ -91,6 +91,18 @@ The evaluated profile is TLS 1.3 with
 and no 0-RTT, resumption, or `KeyUpdate` claim. Denial of service and side
 channels are outside the initial theorem boundary.
 
+The assurance boundary is intentionally explicit:
+
+| Component | Status in the stated claims |
+| --- | --- |
+| Tamarin equational theory and transition rules | Trusted as the symbolic model; theorems are relative to this model |
+| Tamarin, Maude, Lean, and Kani checkers | Trusted toolchain for the reported machine-checked results |
+| TLS 1.3 specification and SHA-256/GCM assumptions | Cryptographic and protocol assumptions |
+| MPZ VM, MPC circuits, Rust parser, and serialization | Implementation under test; not assumed correct by the symbolic proofs |
+| Honest verifier, uncompromised server traffic secret, and fresh randomness | Initial theorem assumptions |
+| Malicious prover and network scheduling | Adversarially controlled in the record-layer model |
+| Malicious verifier, side channels, crashes, and denial of service | Outside the current theorem boundary |
+
 # Construction
 
 Application traffic keys and IVs remain references in the MPC VM. Typed read
