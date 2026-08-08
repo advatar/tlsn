@@ -13,8 +13,9 @@ abstract: |
   jointly computed GCM tag. We separate assurance into symbolic protocol
   analysis, computational assumptions, machine-checked state invariants, and
   empirical validation. Tamarin models prove five record-layer properties,
-  five handshake/transcript properties, and a bounded selective-disclosure
-  observational-equivalence property under explicit abstractions.
+  five handshake/transcript properties, five key-schedule/Finished properties,
+  and a bounded selective-disclosure observational-equivalence property under
+  explicit abstractions.
   The record-layer properties are proved under ideal AEAD and MPC assumptions.
   Lean proves sequence and
   nonce invariants, and Kani checks the corresponding Rust functions over all
