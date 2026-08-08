@@ -1,0 +1,132 @@
+theory Tls13HandshakeTranscript
+begin
+
+builtins: signing, hashing
+
+functions:
+  transcript/3,
+  encrypt/2,
+  application_secret/2 [private],
+  proof_commit/1
+
+restriction Equality:
+  "All x y #i. Eq(x,y) @ #i ==> x = y"
+
+/* A trusted CA key is the certificate-verification root for this model. */
+rule InstallCA:
+  [ Fr(~ca_key) ]
+  --[ CAInstalled(~ca_key) ]->
+  [ !CA(~ca_key) ]
+
+/* The server certificate binds the server name to its signing key. */
+rule RegisterServer:
+  let certificate = sign(<~server_name, pk(~server_signing_key)>, ca_key)
+  in
+  [ !CA(ca_key), Fr(~server_name), Fr(~server_signing_key) ]
+  --[ ServerRegistered(~server_name) ]->
+  [ !Server(~server_name, ~server_signing_key, certificate),
+    Out(<~server_name, certificate>) ]
+
+/* The authenticated server flight binds the transcript to CertificateVerify. */
+rule ServerHandshake:
+  let tr = transcript(server_name, ~client_hello, ~server_hello)
+      certificate_verify = sign(tr, signing_key)
+  in
+  [ !Server(server_name, signing_key, certificate),
+    Fr(~client_hello), Fr(~server_hello), Fr(~application_secret) ]
+  --[ ServerHandshakeAuthenticated(server_name, certificate, tr,
+                                   certificate_verify),
+      ApplicationSecretInstalled(server_name, ~application_secret) ]->
+  [ !HandshakeFlight(server_name, certificate, tr, certificate_verify),
+    !ApplicationSecret(server_name, ~application_secret),
+    Out(<server_name, certificate, tr, certificate_verify>) ]
+
+/*
+ * The prover controls the network input. Acceptance requires the exact
+ * certificate and signature emitted by the registered server. The signing
+ * equation is checked by the built-in verify restriction, while the persistent
+ * flight fact models the authenticated Finished/key-schedule transition.
+ */
+rule AcceptHandshake:
+  [ !Server(server_name, signing_key, certificate),
+    !HandshakeFlight(server_name, certificate, tr, certificate_verify),
+    In(<server_name, certificate, tr, certificate_verify>) ]
+  --[ Eq(verify(certificate_verify, tr, pk(signing_key)), true),
+      HandshakeAccepted(server_name, tr) ]->
+  [ !ApplicationEpoch(server_name, tr) ]
+
+rule StartApplicationEpoch:
+  [ !ApplicationEpoch(server_name, tr) ]
+  --[ ApplicationEpochStarted(server_name, tr) ]->
+  [ !ReadyEpoch(server_name, tr) ]
+
+/* A server application record is tied to the accepted handshake transcript. */
+rule ServerApplicationRecord:
+  let ciphertext = encrypt(<tr, ~plaintext>, application_secret)
+      tag = h(<application_secret, ~aad, ciphertext>)
+  in
+  [ !ReadyEpoch(server_name, tr),
+    !ApplicationSecret(server_name, application_secret),
+    Fr(~sequence), Fr(~aad), Fr(~plaintext) ]
+  --[ ServerRecordAuthenticated(server_name, tr, ~sequence, ~aad,
+                                ciphertext, tag, ~plaintext) ]->
+  [ !ServerRecord(server_name, tr, ~sequence, ~aad, ciphertext, tag,
+                  ~plaintext),
+    Out(<server_name, tr, ~sequence, ~aad, ciphertext, tag>) ]
+
+/* The notary signs/commits only records accepted under the authenticated epoch. */
+rule NotaryAttests:
+  let commitment = proof_commit(<server_name, tr, sequence, aad,
+                                ciphertext, tag, plaintext>)
+  in
+  [ !ServerRecord(server_name, tr, sequence, aad, ciphertext, tag, plaintext) ]
+  --[ NotaryAttested(server_name, tr, sequence, commitment) ]->
+  [ !Attestation(server_name, tr, sequence, commitment),
+    Out(<server_name, tr, sequence, commitment>) ]
+
+/* A presentation must open the exact committed record. */
+rule AcceptPresentation:
+  [ !Attestation(server_name, tr, sequence, commitment),
+    In(<server_name, tr, sequence, commitment, disclosed_plaintext>) ]
+  --[ Eq(proof_commit(disclosed_plaintext), commitment),
+      PresentationAccepted(server_name, tr, sequence, disclosed_plaintext) ]->
+  [ Out(disclosed_plaintext) ]
+
+lemma handshake_executable:
+  exists-trace
+  "Ex server_name certificate tr certificate_verify #i #j.
+     ServerHandshakeAuthenticated(server_name, certificate, tr,
+                                  certificate_verify) @ #i
+   & HandshakeAccepted(server_name, tr) @ #j
+   & #i < #j"
+
+lemma handshake_agreement:
+  "All server_name tr #i.
+     HandshakeAccepted(server_name, tr) @ #i
+   ==> (Ex certificate certificate_verify #j.
+          ServerHandshakeAuthenticated(server_name, certificate, tr,
+                                       certificate_verify) @ #j
+        & #j < #i)"
+
+lemma application_epoch_agreement:
+  "All server_name tr #i.
+     ApplicationEpochStarted(server_name, tr) @ #i
+   ==> (Ex #j. HandshakeAccepted(server_name, tr) @ #j & #j < #i)"
+
+lemma presentation_agreement:
+  "All server_name tr sequence disclosed_plaintext #i.
+     PresentationAccepted(server_name, tr, sequence, disclosed_plaintext) @ #i
+   ==> (Ex aad ciphertext tag #j.
+          ServerRecordAuthenticated(server_name, tr, sequence, aad,
+                                    ciphertext, tag, disclosed_plaintext) @ #j
+        & #j < #i)"
+
+lemma server_identity_is_bound:
+  "All server_name tr sequence disclosed_plaintext #i.
+     PresentationAccepted(server_name, tr, sequence, disclosed_plaintext) @ #i
+   ==> (Ex certificate certificate_verify #j.
+          ServerHandshakeAuthenticated(server_name, certificate, tr,
+                                       certificate_verify) @ #j
+        & #j < #i)"
+
+end

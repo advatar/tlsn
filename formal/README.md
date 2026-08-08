@@ -34,6 +34,17 @@ does not prove computational security of the release capsule, correctness of
 the MPC implementation, Rust refinement, side-channel resistance, or the TLS
 1.3 handshake.
 
+`tamarin/tls13_handshake_transcript.spthy` is the handshake/transcript symbolic
+boundary. It
+models certificate signing, `CertificateVerify` transcript binding, application
+epoch installation, record commitments, and presentation acceptance. It does
+not yet model the concrete TLS 1.3 HKDF transcript or selective-disclosure
+observational equivalence.
+
+The reproduction wrapper checks five additional lemmas from this model:
+handshake executability and agreement, application-epoch agreement,
+presentation agreement, and server-identity binding.
+
 ## Epoch and nonce specification
 
 `lean/Tls13Epoch.lean` proves that successful sequence reservation returns the
