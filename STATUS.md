@@ -14,6 +14,7 @@
 - [x] Fix TLS 1.3 interoperability against Caddy and OpenSSL `s_server`.
 - [x] Cryptographically gate authenticated plaintext release without disclosing the follower tag share.
 - [x] Re-enable and pass the focused TLS 1.3 fixture and interoperability tests.
+- [x] Remove obsolete warnings that claimed TLS 1.3 joint AEAD was not wired.
 
 ## CR-001
 

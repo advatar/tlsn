@@ -289,9 +289,7 @@ impl Tls13KeyState {
                 encrypt_tls13_record(&mut keys.client, msg)
             }
             Epoch::Application => Err(MpcTlsError::hs(
-                "tls13 application records require joint AEAD, which is not wired up yet; \
-                 the plaintext application keys this used to rely on were removed because \
-                 they let the prover forge server responses",
+                "tls13 application records must use the asynchronous joint AEAD path",
             )),
         }
     }
@@ -312,9 +310,7 @@ impl Tls13KeyState {
                 decrypt_tls13_record(&mut keys.server, msg)
             }
             Epoch::Application => Err(MpcTlsError::hs(
-                "tls13 application records require joint AEAD, which is not wired up yet; \
-                 the plaintext application keys this used to rely on were removed because \
-                 they let the prover forge server responses",
+                "tls13 application records must use the asynchronous joint AEAD path",
             )),
         }
     }
