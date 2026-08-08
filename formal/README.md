@@ -45,6 +45,11 @@ The reproduction wrapper checks five additional lemmas from this model:
 handshake executability and agreement, application-epoch agreement,
 presentation agreement, and server-identity binding.
 
+`./formal/validate.sh` runs the executable MPC/reference equivalence tests for
+GHASH, AES-GCM, and secret-nonce TLS 1.3 records, the HMAC/key-schedule and
+TLS configuration suites, the public test build, and the focused end-to-end
+TLS 1.3 fixture. Docker interoperability remains an explicit separate suite.
+
 ## Epoch and nonce specification
 
 `lean/Tls13Epoch.lean` proves that successful sequence reservation returns the
