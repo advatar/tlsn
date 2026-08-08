@@ -39,7 +39,9 @@ boundary. It
 models certificate signing, `CertificateVerify` transcript binding, application
 epoch installation, record commitments, and presentation acceptance. It does
 not yet model the concrete TLS 1.3 HKDF transcript or selective-disclosure
-observational equivalence.
+observational equivalence; those boundaries are covered by the dedicated
+key-schedule and selective-disclosure theories below. Concrete Rust
+HKDF/parser refinement remains open.
 
 `tamarin/tls13_selective_disclosure.spthy` is a minimal observational-
 equivalence model for selective disclosure: the two diff branches share the
