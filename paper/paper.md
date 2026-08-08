@@ -107,10 +107,10 @@ hardening are maintained in the accompanying computational-proof artifact.
 
 ## Symbolic model
 
-The Tamarin model idealizes AEAD plaintext and authentication, private MPC
-evaluation, and additive tag-share reconstruction. It gives the adversary
-network control and the leader tag share but withholds the follower share.
-Five required lemmas close automatically:
+The record-layer Tamarin model idealizes AEAD plaintext and authentication,
+private MPC evaluation, and additive tag-share reconstruction. It gives the
+adversary network control and the leader tag share but withholds the follower
+share. Five required lemmas close automatically:
 
 | Lemma | Result | Boundary |
 |---|---:|---|
@@ -125,6 +125,13 @@ genuine tag for a genuine ciphertext can use it to open a capsule after
 submitting another tag. The final theorem therefore establishes that released
 plaintext corresponds to a server-authenticated ciphertext under some valid
 tag, not equality with the submitted tag.
+
+A second Tamarin model covers the symbolic handshake/transcript boundary. It
+closes five additional lemmas for handshake executability and agreement,
+application-epoch agreement, presentation agreement, and server-identity
+binding. The model treats the concrete TLS 1.3 HKDF and certificate parser as
+abstract interfaces; it therefore does not establish those implementation
+details.
 
 ## State and implementation invariants
 
@@ -170,7 +177,7 @@ be collected before submission.
 | Released plaintext has server provenance | Tamarin theorem | Computational MPC composition; handshake binding |
 | Epoch sequences do not wrap or repeat locally | Lean and Kani | Concurrent whole-program refinement |
 | Fixed-IV nonce derivation is injective | Lean and Kani | Circuit/reference equivalence |
-| Full proof transcript is authentic | End-to-end tests | Handshake and transcript-agreement theorem |
+| Full proof transcript is authentic | Tamarin handshake/transcript model plus end-to-end tests | Concrete HKDF/parser refinement |
 | Selective disclosure is private | Existing protocol tests | Leakage function and equivalence proof |
 
 # Limitations and research agenda
@@ -205,4 +212,3 @@ composition, circuit equivalence, and malicious-verifier privacy remains
 necessary before claiming end-to-end formal verification.
 
 # References
-
