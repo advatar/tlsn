@@ -38,8 +38,8 @@ async fn tls12(mode: Mode) {
     let server_random: [u8; 32] = [96u8; 32];
 
     let (mut leader_exec, mut follower_exec) = test_mt_context(8);
-    let mut leader_ctx = leader_exec.new_context().await.unwrap();
-    let mut follower_ctx = follower_exec.new_context().await.unwrap();
+    let mut leader_ctx = leader_exec.new_context().unwrap();
+    let mut follower_ctx = follower_exec.new_context().unwrap();
 
     let delta = Delta::random(&mut rng);
     let (ot_send, ot_recv) = ideal_cot(delta.into_inner());

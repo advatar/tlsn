@@ -201,8 +201,12 @@ and committed during finalization so both VM parties terminate consistently.
 Current validation includes unit tests, an end-to-end TLS 1.3 notarization
 fixture, a five-case certificate/client-authentication matrix, and
 interoperability with nginx, Apache httpd, Caddy, and OpenSSL `s_server`.
-Performance measurements and reproducible hardware/software details remain to
-be collected before submission.
+On the reference arm64 Mac17,6 (18 logical CPUs, Rust 1.97.1), the existing
+Criterion harness reports 20.824 ms median-equivalent midpoint for the normal
+TLS 1.3 key schedule and 15.646 ms for the reduced schedule (10 samples per
+mode). These are indicative local measurements, not a cross-machine
+performance claim; the benchmark command and environment are recorded for
+reproduction.
 
 The Docker-backed interoperability matrix was rerun on the verification
 branch. All five cases passed: nginx RSA, nginx ECDSA, Apache RSA, Caddy RSA,

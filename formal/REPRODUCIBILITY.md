@@ -13,6 +13,12 @@ run from the repository root and are intentionally serial.
 | Interoperability | `./formal/interop.sh` | nginx RSA/ECDSA, Apache RSA, Caddy RSA, OpenSSL `s_server` pass |
 | Manuscript | `./paper/build.sh` | HTML and LaTeX render with bibliography resolution |
 
+The TLS 1.3 key-schedule benchmark is run with
+`cargo bench -p tlsn-hmac-sha256 --bench tls13 -- --noplot`. The reference run
+used arm64 Mac17,6, 18 logical CPUs, and Rust 1.97.1; it reported approximately
+20.824 ms for `tls13_normal` and 15.646 ms for `tls13_reduced` (Criterion, 10
+samples per mode). Benchmark numbers are machine-dependent.
+
 The symbolic theories deliberately abstract cryptographic primitives and the
 production parser/circuit implementation. Passing this record therefore
 establishes reproducibility of the stated evidence, not a whole-program
