@@ -23,6 +23,20 @@ SHA-512 state are exposed as the digest state. The circuit must implement all
 5. Generalize transcript and Finished widths to 48 bytes.
 6. Only then enable `TLS_AES_256_GCM_SHA384` in the backend.
 
+## Verification gates
+
+The milestone is not complete when the circuit merely evaluates. It must also
+provide:
+
+- circuit/reference equivalence against `sha2::compress512` over deterministic
+  and randomized cases;
+- HMAC-SHA384 and HKDF-Expand-Label vector checks in both MPC execution modes;
+- formal width and domain-separation invariants for 48-byte hashes, Finished
+  keys, and 32-byte AES-256 traffic keys;
+- updated Tamarin key-schedule and record-layer claims for the SHA-384 suite;
+- Lean/Kani checks for new key-width, nonce, epoch, and suite-selection state;
+- the existing adversarial and interoperability suites extended to AES-256.
+
 The current MPZ dependency contains only `sha256.bin`; no SHA-384 circuit is
 silently substituted. Until this design is implemented and tested, AES-256
 negotiation remains rejected.

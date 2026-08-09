@@ -12,6 +12,9 @@
 - [x] Add a clear SHA-384 HKDF/HkdfLabel reference oracle for future MPC equivalence tests.
 - [ ] Implement and verify the secret-shared SHA-384 compression/HMAC/HKDF circuit.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.
+- [ ] Formally verify SHA-384 circuit/reference equivalence and HMAC/HKDF width/domain invariants.
+- [ ] Extend Tamarin/Lean/Kani artifacts for AES-256 key schedule, Finished state, epochs, and suite negotiation.
+- [ ] Re-run adversarial tests and interoperability after enabling any additional TLS 1.3 suite.
 - [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
 - [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.
