@@ -23,6 +23,11 @@ SHA-512 state are exposed as the digest state. The circuit must implement all
 5. Generalize transcript and Finished widths to 48 bytes.
 6. Only then enable `TLS_AES_256_GCM_SHA384` in the backend.
 
+The standalone boolean circuit builder and its `sha2::compress512` equivalence
+test now live in
+`crates/components/hmac-sha256/src/tls13/sha384_circuit.rs`. It is not yet
+wired into secret-shared HMAC/HKDF or production negotiation.
+
 ## Verification gates
 
 The milestone is not complete when the circuit merely evaluates. It must also

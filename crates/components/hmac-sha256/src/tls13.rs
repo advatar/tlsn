@@ -22,6 +22,7 @@ mod application;
 mod handshake;
 #[allow(dead_code)]
 mod sha384_reference;
+mod sha384_circuit;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]
