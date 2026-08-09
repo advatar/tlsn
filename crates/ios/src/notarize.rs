@@ -15,7 +15,10 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tlsn_notary_artifact::SignedArtifact;
-use tlsn_sdk_core::{HttpRequest, ProverConfig, Reveal, SdkProver};
+use tlsn_sdk_core::{
+    compute_reveal, Handler, HandlerAction, HandlerParams, HandlerPart, HandlerType, HttpRequest,
+    ProverConfig, Reveal, SdkProver,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
@@ -42,6 +45,69 @@ struct NotarizeRequest {
     #[serde(default)]
     max_recv_data: Option<usize>,
     trusted_notary_public_key: String,
+    /// RFC 6901 JSON Pointers (e.g. `/account/status`) the holder chose to disclose from a JSON
+    /// response. Empty ⇒ the whole transcript is revealed (backwards-compatible default).
+    #[serde(default)]
+    disclosed_fields: Vec<String>,
+}
+
+/// Convert an RFC 6901 JSON Pointer (`/account/status`, `/items/0/id`) to the dot-notation path the
+/// sdk-core JSON handler expects (`account.status`, `items.0.id`). Per RFC 6901, `~1` decodes to `/`
+/// and then `~0` decodes to `~`.
+///
+/// A JSON key that contains a literal `.` is ambiguous in dot-notation and will not resolve; the
+/// notarization then fails loudly (the field extractor errors on the unknown path) rather than
+/// silently disclosing the wrong span.
+fn json_pointer_to_dot_path(pointer: &str) -> String {
+    pointer
+        .trim_start_matches('/')
+        .split('/')
+        .map(|token| token.replace("~1", "/").replace("~0", "~"))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Build the reveal handlers for a selective disclosure: reveal only the chosen response JSON fields
+/// plus the structural framing needed to interpret the partial transcript — the request line, the
+/// response status code, and the response `Content-Type`. Only the response body is field-selected;
+/// request headers (e.g. cookies) are never revealed.
+fn disclosure_handlers(disclosed_fields: &[String]) -> Vec<Handler> {
+    let mut handlers = vec![
+        Handler {
+            handler_type: HandlerType::Sent,
+            part: HandlerPart::StartLine,
+            action: HandlerAction::Reveal,
+            params: None,
+        },
+        Handler {
+            handler_type: HandlerType::Recv,
+            part: HandlerPart::StatusCode,
+            action: HandlerAction::Reveal,
+            params: None,
+        },
+        Handler {
+            handler_type: HandlerType::Recv,
+            part: HandlerPart::Headers,
+            action: HandlerAction::Reveal,
+            params: Some(HandlerParams {
+                key: Some("content-type".to_owned()),
+                ..Default::default()
+            }),
+        },
+    ];
+    for field in disclosed_fields {
+        handlers.push(Handler {
+            handler_type: HandlerType::Recv,
+            part: HandlerPart::Body,
+            action: HandlerAction::Reveal,
+            params: Some(HandlerParams {
+                content_type: Some("json".to_owned()),
+                path: Some(json_pointer_to_dot_path(field)),
+                ..Default::default()
+            }),
+        });
+    }
+    handlers
 }
 
 #[derive(Debug, Serialize)]
@@ -163,15 +229,25 @@ async fn run(request: NotarizeRequest) -> Result<NotarizeResponse, String> {
         .await
         .map_err(|e| e.to_string())?;
     let transcript = prover.transcript().map_err(|e| e.to_string())?;
-    prover
-        .reveal(
-            Reveal::new()
-                .sent(0..transcript.sent.len())
-                .recv(0..transcript.recv.len())
-                .server_identity(true),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
+    let reveal = if request.disclosed_fields.is_empty() {
+        // No field selection ⇒ reveal the whole exchange (backwards-compatible default).
+        Reveal::new()
+            .sent(0..transcript.sent.len())
+            .recv(0..transcript.recv.len())
+            .server_identity(true)
+    } else {
+        // Selective disclosure: reveal only the chosen JSON fields of the response (plus the request
+        // line, status, and Content-Type framing). The notary then co-signs a genuinely redacted
+        // partial transcript — everything unselected, including cookies, stays hidden.
+        let handlers = disclosure_handlers(&request.disclosed_fields);
+        // Unlike the full-reveal branch above, this does not call `.server_identity(true)`:
+        // `compute_reveal` already binds the server identity into the Reveal it returns (sdk-core
+        // handler/mod.rs), so a redacted proof still names the server it came from.
+        compute_reveal(&transcript.sent, &transcript.recv, &handlers)
+            .map_err(|e| format!("selective reveal failed: {e}"))?
+            .reveal
+    };
+    prover.reveal(reveal).await.map_err(|e| e.to_string())?;
 
     let snapshot = poll_session(&notary, &session_id).await?;
     let artifact_value = snapshot
@@ -349,5 +425,60 @@ mod tests {
     fn only_loopback_may_use_plain_http() {
         assert!(validate_notary_url("http://127.0.0.1:3000").is_ok());
         assert!(validate_notary_url("http://notary.example").is_err());
+    }
+
+    #[test]
+    fn json_pointer_to_dot_path_decodes_rfc6901() {
+        assert_eq!(json_pointer_to_dot_path("/account"), "account");
+        assert_eq!(
+            json_pointer_to_dot_path("/account/status"),
+            "account.status"
+        );
+        assert_eq!(json_pointer_to_dot_path("/items/0/id"), "items.0.id");
+        // `~1` -> `/`
+        assert_eq!(json_pointer_to_dot_path("/a~1b"), "a/b");
+        // `~0` -> `~`
+        assert_eq!(json_pointer_to_dot_path("/a~0b"), "a~b");
+        // Order matters: `~1` is decoded BEFORE `~0`, so `~01` becomes the literal `~1`, not `/`.
+        // This case fails if the two replacements are swapped.
+        assert_eq!(json_pointer_to_dot_path("/a~01b"), "a~1b");
+    }
+
+    #[test]
+    fn disclosure_handlers_reveal_only_framing_and_selected_response_fields() {
+        let handlers =
+            disclosure_handlers(&["/account/status".to_owned(), "/holder/name".to_owned()]);
+        // Three framing handlers + one Recv/Body handler per selected field.
+        assert_eq!(handlers.len(), 5);
+
+        // Framing: request line (Sent), response status (Recv), response Content-Type (Recv).
+        assert!(handlers
+            .iter()
+            .any(|h| h.handler_type == HandlerType::Sent && h.part == HandlerPart::StartLine));
+        assert!(handlers
+            .iter()
+            .any(|h| h.handler_type == HandlerType::Recv && h.part == HandlerPart::StatusCode));
+        assert!(handlers.iter().any(|h| h.handler_type == HandlerType::Recv
+            && h.part == HandlerPart::Headers
+            && h.params.as_ref().and_then(|p| p.key.as_deref()) == Some("content-type")));
+
+        // Leakage guard: the request body and request headers (cookies) are NEVER revealed.
+        assert!(!handlers
+            .iter()
+            .any(|h| h.handler_type == HandlerType::Sent && h.part == HandlerPart::Headers));
+        assert!(!handlers
+            .iter()
+            .any(|h| h.handler_type == HandlerType::Sent && h.part == HandlerPart::Body));
+
+        // Exactly the selected response-body paths, in dot-notation.
+        let body_paths: Vec<String> = handlers
+            .iter()
+            .filter(|h| h.handler_type == HandlerType::Recv && h.part == HandlerPart::Body)
+            .filter_map(|h| h.params.as_ref().and_then(|p| p.path.clone()))
+            .collect();
+        assert_eq!(
+            body_paths,
+            vec!["account.status".to_owned(), "holder.name".to_owned()]
+        );
     }
 }
