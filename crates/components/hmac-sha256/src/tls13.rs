@@ -32,6 +32,8 @@ mod sha384;
 mod hmac384;
 #[allow(dead_code)]
 mod hkdf384;
+#[allow(dead_code)]
+mod hkdf_extract384;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]

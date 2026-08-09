@@ -97,6 +97,11 @@ cryptographic HMAC correctness.
 hashes, 32-byte traffic keys, 12-byte IVs, 16-byte GCM tags, and fixed TLS
 label overhead. It is executed by `formal/verify.sh`.
 
+The SHA-384 implementation also includes a secret-shared HKDF-Extract
+primitive accepting multiple IKM vectors (needed for hybrid key exchange),
+with equivalence coverage against the clear HMAC-SHA384 reference. Full
+SHA-384 TLS 1.3 key-schedule integration remains open.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

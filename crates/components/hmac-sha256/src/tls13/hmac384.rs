@@ -27,6 +27,23 @@ pub(crate) fn hmac_sha384(
     outer_partial.finalize(vm).map_err(FError::vm)
 }
 
+/// Computes HMAC-SHA384 with a secret-shared message assembled from vectors.
+/// The key is supplied as a secret-shared vector, as required by HKDF-Extract.
+pub(crate) fn hmac_sha384_message(
+    vm: &mut dyn Vm<Binary>,
+    key: Vector<U8>,
+    message: &[Vector<U8>],
+) -> Result<Array<U8, 48>, FError> {
+    let mut inner = ipad_partial(vm, key)?;
+    for part in message {
+        inner.update(part);
+    }
+    inner.compress(vm).map_err(FError::vm)?;
+    let inner_local = inner.finalize(vm).map_err(FError::vm)?;
+    let outer = opad_partial(vm, key)?;
+    hmac_sha384(vm, outer, inner_local)
+}
+
 /// Computes one HMAC-SHA384 padded-key partial state.
 pub(crate) fn compute_partial(
     vm: &mut dyn Vm<Binary>,
