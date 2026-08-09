@@ -132,6 +132,10 @@ parties and installs the resulting typed epochs; the integration test checks
 epoch ownership after joint VM execution. It still requires suite negotiation
 to select this path in a live handshake.
 
+`formal/verify.sh` runs this integration test in addition to the Lean, Kani,
+and Tamarin checks, so the formal gate covers the latest circuit-to-epoch
+feature as an executable refinement check.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.
