@@ -3,6 +3,7 @@ pub(crate) mod nonce;
 use aes_gcm::{aead::AeadInPlace, Aes128Gcm, Aes256Gcm, NewAead};
 use hmac::{Hmac, Mac};
 use hmac_sha256::{Mode, Role as KeyScheduleRole, Tls13KeySched};
+use hmac_sha256::Sha384ApplicationKeys;
 use mpz_common::Context;
 use mpz_memory_core::{
     binary::{Binary, U8},
@@ -250,6 +251,31 @@ impl Tls13KeyState {
             server: ReadEpoch::new(Epoch::Application, 0, keys.server_write_key, keys.server_iv),
         });
 
+        Ok(())
+    }
+
+    /// Derives and installs SHA-384/AES-256 application epochs from a
+    /// secret-shared master secret. This is the suite-specific path used once
+    /// TLS_AES_256_GCM_SHA384 negotiation is wired into the handshake.
+    pub(crate) async fn set_sha384_application_keys(
+        &mut self,
+        ctx: &mut Context,
+        vm: &mut (dyn VmTrait<Binary> + Send),
+        master_secret: Array<U8, 48>,
+        transcript_hash: [u8; 48],
+    ) -> Result<(), MpcTlsError> {
+        let mut material = Sha384ApplicationKeys::alloc(vm, master_secret.into(), &transcript_hash)
+            .map_err(MpcTlsError::from)?;
+        material.set_context(vm).map_err(MpcTlsError::from)?;
+        mpz_vm_core::Execute::execute_all(vm, ctx)
+            .await
+            .map_err(MpcTlsError::hs)?;
+        self.install_sha384_application_keys(
+            material.client_key().map_err(MpcTlsError::from)?,
+            material.client_iv().map_err(MpcTlsError::from)?,
+            material.server_key().map_err(MpcTlsError::from)?,
+            material.server_iv().map_err(MpcTlsError::from)?,
+        );
         Ok(())
     }
 
@@ -727,7 +753,7 @@ mod tests {
     use mpz_memory_core::correlated::Delta;
     use mpz_ot::ideal::cot::{ideal_cot, IdealCOTReceiver, IdealCOTSender};
     use mpz_vm_core::{
-        memory::{binary::Binary, Array, MemoryExt, ViewExt},
+        memory::{binary::{Binary, U8}, Array, MemoryExt, ViewExt},
         Execute, Vm,
     };
     use rand::{rngs::StdRng, SeedableRng};
@@ -890,6 +916,35 @@ mod tests {
         assert_eq!(record.seq, 0);
         assert_eq!(received.payload.0, message.payload.0);
         assert_eq!(received.typ, message.typ);
+    }
+
+    #[tokio::test]
+    async fn sha384_application_material_installs_typed_epochs() {
+        let master = [0x33u8; 48];
+        let transcript = [0x44u8; 48];
+        let (mut ctx_a, mut ctx_b) = test_st_context(8);
+        let (mut vm_a, mut vm_b) = mock_vm();
+        let setup = |vm: &mut (dyn Vm<Binary> + Send)| {
+            let master_ref: Array<U8, 48> = vm.alloc().unwrap();
+            vm.mark_public(master_ref).unwrap();
+            vm.assign(master_ref, master).unwrap();
+            vm.commit(master_ref).unwrap();
+            master_ref
+        };
+        let master_a = setup(&mut vm_a);
+        let master_b = setup(&mut vm_b);
+        let mut state_a = Tls13KeyState::new(Mode::Normal, Role::Leader);
+        let mut state_b = Tls13KeyState::new(Mode::Normal, Role::Follower);
+        tokio::try_join!(
+            state_a.set_sha384_application_keys(&mut ctx_a, &mut vm_a, master_a, transcript),
+            state_b.set_sha384_application_keys(&mut ctx_b, &mut vm_b, master_b, transcript),
+        ).unwrap();
+        let state = state_a;
+        let keys = state.session_keys().sha384_application.as_ref().unwrap();
+        assert_eq!(keys.client.epoch(), Epoch::Application);
+        assert_eq!(keys.server.epoch(), Epoch::Application);
+        assert_eq!(keys.client.next_sequence(), 0);
+        assert_eq!(keys.server.next_sequence(), 0);
     }
 
     #[test]

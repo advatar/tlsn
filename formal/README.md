@@ -127,6 +127,11 @@ MPC-TLS now has a separate typed SHA-384/AES-256 application epoch slot. It is
 not populated by the legacy SHA-256 handshake path; suite dispatch remains an
 explicit pending integration step.
 
+The MPC-TLS key state now executes the exported SHA-384 allocator in both
+parties and installs the resulting typed epochs; the integration test checks
+epoch ownership after joint VM execution. It still requires suite negotiation
+to select this path in a live handshake.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.
