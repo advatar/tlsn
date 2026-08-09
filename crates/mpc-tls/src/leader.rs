@@ -818,10 +818,6 @@ impl Backend for MpcTlsLeader {
         &mut self,
         handshake_hash: Vec<u8>,
     ) -> Result<(), BackendError> {
-        let hash: [u8; 32] = handshake_hash
-            .try_into()
-            .map_err(|_| MpcTlsError::hs("tls13 handshake hash is not 32 bytes"))?;
-
         let State::Handshake {
             ctx,
             vm,
@@ -838,7 +834,7 @@ impl Backend for MpcTlsLeader {
             debug!("setting TLS 1.3 application handshake hash");
             ctx.io_mut()
                 .send(Message::Tls13HandshakeHash(Tls13HandshakeHash {
-                    handshake_hash: hash.to_vec(),
+                    handshake_hash: handshake_hash.clone(),
                 }))
                 .await
                 .map_err(MpcTlsError::from)?;
@@ -846,13 +842,19 @@ impl Backend for MpcTlsLeader {
             let mut vm = vm
                 .try_lock()
                 .map_err(|_| MpcTlsError::hs("VM lock is held"))?;
-            tls13
-                .set_handshake_hash(ctx, &mut *vm, hash)
-                .await
-                .map_err(MpcTlsError::hs)?;
-            drop(vm);
-            record_layer.setup_tls13(ctx).await?;
-            debug!("TLS 1.3 application record layer is ready");
+            match handshake_hash.len() {
+                32 => {
+                    tls13.set_handshake_hash(ctx, &mut *vm, handshake_hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?;
+                    drop(vm);
+                    record_layer.setup_tls13(ctx).await?;
+                    debug!("TLS 1.3 SHA-256 application record layer is ready");
+                }
+                48 => {
+                    tls13.set_sha384_handshake_hash(ctx, &mut *vm, handshake_hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?;
+                    debug!("TLS 1.3 SHA-384 handshake epochs are ready; application epoch follows suite dispatch");
+                }
+                _ => return Err(MpcTlsError::hs("TLS 1.3 handshake hash must be 32 or 48 bytes").into()),
+            }
         }
 
         Ok(())
