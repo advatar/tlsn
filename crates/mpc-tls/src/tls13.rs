@@ -238,6 +238,23 @@ impl Tls13KeyState {
             server: ReadEpoch::new(Epoch::Handshake, 0, material.server_key().map_err(MpcTlsError::from)?, material.server_iv().map_err(MpcTlsError::from)?),
             server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
         });
+        let mut application = hmac_sha256::Sha384ApplicationKeys::alloc_from_shared_secret(
+            hmac_sha256::Mode::Normal,
+            vm,
+            shared_secret,
+            &transcript_hash,
+        )
+        .map_err(MpcTlsError::from)?;
+        application.set_context(vm).map_err(MpcTlsError::from)?;
+        mpz_vm_core::Execute::execute_all(vm, ctx)
+            .await
+            .map_err(MpcTlsError::hs)?;
+        self.install_sha384_application_keys(
+            application.client_key().map_err(MpcTlsError::from)?,
+            application.client_iv().map_err(MpcTlsError::from)?,
+            application.server_key().map_err(MpcTlsError::from)?,
+            application.server_iv().map_err(MpcTlsError::from)?,
+        );
         Ok(())
     }
 

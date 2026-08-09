@@ -1,8 +1,10 @@
 //! Secret-shared SHA-384 TLS 1.3 application traffic key derivation.
 
-use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, Vm};
+use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, prelude::MemoryExt, Vm};
 use crate::FError;
 use super::hkdf384::HkdfExpand384;
+use super::hkdf_extract384::HkdfExtract384;
+use crate::Mode;
 
 /// Secret-shared TLS 1.3 application key material for SHA-384 suites.
 #[derive(Debug)]
@@ -16,6 +18,27 @@ pub struct Sha384ApplicationKeys {
 }
 
 impl Sha384ApplicationKeys {
+    /// Allocates the complete no-PSK TLS 1.3 SHA-384 schedule from shared
+    /// ECDHE input, including the post-handshake application master secret.
+    pub fn alloc_from_shared_secret(
+        mode: Mode,
+        vm: &mut dyn Vm<Binary>,
+        shared_secret: Array<U8, 32>,
+        transcript_hash: &[u8; 48],
+    ) -> Result<Self, crate::FError> {
+        let empty = vm.alloc_vec(0).map_err(crate::FError::vm)?;
+        let empty_ikm = vm.alloc_vec(0).map_err(crate::FError::vm)?;
+        let early = HkdfExtract384::alloc(mode, vm, empty, &[empty_ikm])?;
+        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48)?;
+        derived.set_context(vm, &[])?;
+        let handshake = HkdfExtract384::alloc(mode, vm, derived.output()?.into(), &[shared_secret.into()])?;
+        let mut handshake_derived = HkdfExpand384::alloc(vm, handshake.output().into(), b"derived", 48)?;
+        handshake_derived.set_context(vm, &[])?;
+        let empty_ikm = vm.alloc_vec(0).map_err(crate::FError::vm)?;
+        let master = HkdfExtract384::alloc(mode, vm, handshake_derived.output()?.into(), &[empty_ikm])?;
+        Self::alloc(vm, master.output().into(), transcript_hash)
+    }
+
     /// Allocates application traffic secrets and typed AES-256 key/IV views.
     pub fn alloc(
         vm: &mut dyn Vm<Binary>,
