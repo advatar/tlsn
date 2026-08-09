@@ -123,6 +123,10 @@ installation are intentionally still separate pending integration work.
 allocator so the MPC-TLS state machine can consume the same circuit-backed
 views directly; no cleartext key fallback is introduced.
 
+MPC-TLS now has a separate typed SHA-384/AES-256 application epoch slot. It is
+not populated by the legacy SHA-256 handshake path; suite dispatch remains an
+explicit pending integration step.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

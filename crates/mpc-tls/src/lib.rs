@@ -19,7 +19,8 @@ pub use error::MpcTlsError;
 pub use follower::MpcTlsFollower;
 pub use leader::MpcTlsLeader;
 pub use tls13::{
-    Epoch, ReadEpoch, Tls13ApplicationKeys, Tls13HandshakeKeys, Tls13SessionKeys, WriteEpoch,
+    Epoch, ReadEpoch, Tls13ApplicationKeys, Tls13HandshakeKeys, Tls13SessionKeys,
+    Tls13Sha384ApplicationKeys, WriteEpoch,
 };
 
 use std::{future::Future, pin::Pin, sync::Arc};

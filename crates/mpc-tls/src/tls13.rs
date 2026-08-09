@@ -145,6 +145,15 @@ pub struct Tls13ApplicationKeys {
     pub server: ReadEpoch<Array<U8, 16>, Array<U8, 12>>,
 }
 
+/// TLS 1.3 SHA-384/AES-256 application keys retained in MPC form.
+#[derive(Debug)]
+pub struct Tls13Sha384ApplicationKeys {
+    /// Client-to-server write epoch.
+    pub client: WriteEpoch<Array<U8, 32>, Array<U8, 12>>,
+    /// Server-to-client read epoch.
+    pub server: ReadEpoch<Array<U8, 32>, Array<U8, 12>>,
+}
+
 /// TLS 1.3 session key material tracked by MPC-TLS.
 #[derive(Debug, Default)]
 pub struct Tls13SessionKeys {
@@ -152,6 +161,8 @@ pub struct Tls13SessionKeys {
     pub handshake: Option<Tls13HandshakeKeys>,
     /// Application traffic keys retained in MPC form.
     pub application: Option<Tls13ApplicationKeys>,
+    /// SHA-384/AES-256 application keys, when that suite is selected.
+    pub sha384_application: Option<Tls13Sha384ApplicationKeys>,
 }
 
 pub(crate) struct Tls13KeyState {
@@ -240,6 +251,21 @@ impl Tls13KeyState {
         });
 
         Ok(())
+    }
+
+    /// Installs typed SHA-384/AES-256 application views without decoding keys.
+    #[allow(dead_code)]
+    pub(crate) fn install_sha384_application_keys(
+        &mut self,
+        client_key: Array<U8, 32>,
+        client_iv: Array<U8, 12>,
+        server_key: Array<U8, 32>,
+        server_iv: Array<U8, 12>,
+    ) {
+        self.keys.sha384_application = Some(Tls13Sha384ApplicationKeys {
+            client: WriteEpoch::new(Epoch::Application, 0, client_key, client_iv),
+            server: ReadEpoch::new(Epoch::Application, 0, server_key, server_iv),
+        });
     }
 
     #[allow(dead_code)]
