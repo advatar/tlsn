@@ -56,11 +56,12 @@ struct ReleaseCapsule {
     commitment: [u8; 32],
 }
 
-fn release_pad(tag_share: &[u8; 16], len: usize) -> Vec<u8> {
+fn release_pad(tag_share: &[u8; 16], key_index: usize, len: usize) -> Vec<u8> {
     let mut output = Vec::with_capacity(len);
     for counter in 0u32.. {
         let mut mac = Hmac::<Sha256>::new_from_slice(tag_share).expect("HMAC accepts any key size");
         mac.update(b"tlsn tls13 authenticated release pad");
+        mac.update(&(key_index as u64).to_be_bytes());
         mac.update(&counter.to_be_bytes());
         output.extend_from_slice(&mac.finalize().into_bytes());
         if output.len() >= len {
@@ -71,32 +72,34 @@ fn release_pad(tag_share: &[u8; 16], len: usize) -> Vec<u8> {
     unreachable!("the unbounded counter produces enough output")
 }
 
-fn release_commitment(tag_share: &[u8; 16], release: &[u8]) -> [u8; 32] {
+fn release_commitment(tag_share: &[u8; 16], key_index: usize, release: &[u8]) -> [u8; 32] {
     let mut mac = Hmac::<Sha256>::new_from_slice(tag_share).expect("HMAC accepts any key size");
     mac.update(b"tlsn tls13 authenticated release commitment");
+    mac.update(&(key_index as u64).to_be_bytes());
     mac.update(&(release.len() as u64).to_be_bytes());
     mac.update(release);
     mac.finalize().into_bytes().into()
 }
 
-fn seal_release(tag_share: &[u8; 16], release: Vec<u8>) -> ReleaseCapsule {
-    let pad = release_pad(tag_share, release.len());
+fn seal_release(tag_share: &[u8; 16], key_index: usize, release: Vec<u8>) -> ReleaseCapsule {
+    let pad = release_pad(tag_share, key_index, release.len());
     let ciphertext = release.iter().zip(pad).map(|(a, b)| a ^ b).collect();
     ReleaseCapsule {
         ciphertext,
-        commitment: release_commitment(tag_share, &release),
+        commitment: release_commitment(tag_share, key_index, &release),
     }
 }
 
 fn prepare_release_message(
     tag_shares: &[TagShare],
+    key_index: usize,
     releases: Vec<Option<Vec<u8>>>,
 ) -> (Vec<Option<TagShare>>, Vec<Option<ReleaseCapsule>>) {
     tag_shares
         .iter()
         .zip(releases)
         .map(|(share, release)| match release {
-            Some(release) => (None, Some(seal_release(&share.0, release))),
+            Some(release) => (None, Some(seal_release(&share.0, key_index, release))),
             None => (Some(share.clone()), None),
         })
         .unzip()
@@ -104,16 +107,17 @@ fn prepare_release_message(
 
 fn open_release(
     expected_tag_share: &[u8; 16],
+    key_index: usize,
     capsule: ReleaseCapsule,
 ) -> Result<Vec<u8>, AeadError> {
-    let pad = release_pad(expected_tag_share, capsule.ciphertext.len());
+    let pad = release_pad(expected_tag_share, key_index, capsule.ciphertext.len());
     let release = capsule
         .ciphertext
         .into_iter()
         .zip(pad)
         .map(|(a, b)| a ^ b)
         .collect::<Vec<_>>();
-    if capsule.commitment != release_commitment(expected_tag_share, &release) {
+    if capsule.commitment != release_commitment(expected_tag_share, key_index, &release) {
         return Err(AeadError::tag("failed to verify tag for release"));
     }
     Ok(release)
@@ -193,7 +197,7 @@ impl Task for VerifyTags {
                                 "follower disclosed a gated TLS 1.3 tag share",
                             ));
                         }
-                        released.push(open_release(&expected_follower_share, capsule)?);
+                        released.push(open_release(&expected_follower_share, key_index, capsule)?);
                     } else {
                         let follower_share = follower_share
                             .ok_or_else(|| AeadError::tag("follower tag share is missing"))?;
@@ -205,7 +209,8 @@ impl Task for VerifyTags {
                 Ok(released)
             }
             Role::Follower => {
-                let (peer_tag_shares, capsules) = prepare_release_message(&tag_shares, releases);
+                let (peer_tag_shares, capsules) =
+                    prepare_release_message(&tag_shares, key_index, releases);
                 io.send((peer_tag_shares, capsules))
                     .await
                     .map_err(AeadError::tag)?;
@@ -228,20 +233,23 @@ mod tests {
     fn authenticated_release_opens_only_with_the_expected_tag_share() {
         let tag_share = [7u8; 16];
         let release = vec![42u8; 97];
-        let capsule = seal_release(&tag_share, release.clone());
-        assert_eq!(open_release(&tag_share, capsule).unwrap(), release);
+        let capsule = seal_release(&tag_share, 7, release.clone());
+        assert_eq!(open_release(&tag_share, 7, capsule).unwrap(), release);
 
-        let capsule = seal_release(&tag_share, vec![42u8; 97]);
+        let capsule = seal_release(&tag_share, 7, release);
+        assert!(open_release(&tag_share, 8, capsule).is_err());
+
+        let capsule = seal_release(&tag_share, 7, vec![42u8; 97]);
         let mut wrong_share = tag_share;
         wrong_share[0] ^= 1;
-        assert!(open_release(&wrong_share, capsule).is_err());
+        assert!(open_release(&wrong_share, 7, capsule).is_err());
     }
 
     #[test]
     fn gated_release_withholds_the_raw_tag_share() {
         let tag_shares = vec![TagShare([7u8; 16]), TagShare([9u8; 16])];
         let (peer_tag_shares, capsules) =
-            prepare_release_message(&tag_shares, vec![Some(vec![42u8; 97]), None]);
+            prepare_release_message(&tag_shares, 7, vec![Some(vec![42u8; 97]), None]);
 
         assert!(peer_tag_shares[0].is_none());
         assert!(capsules[0].is_some());
