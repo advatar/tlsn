@@ -112,6 +112,9 @@ reference test. The Tamarin AES-256/SHA-384 model checks its symbolic ordering
 and transcript-binding analogue; a Rust-to-model refinement proof remains
 open.
 
+The circuit evidence includes multi-block streaming SHA-384 and HMAC-SHA384
+reference tests, in addition to the TLS-sized one-block derivation tests.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

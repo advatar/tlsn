@@ -98,7 +98,7 @@ mod tests {
     #[tokio::test]
     async fn hmac_sha384_matches_clear_reference() {
         let key = [0x11u8; 48];
-        let msg = [0x22u8; 37];
+        let msg = vec![0x22u8; 3072];
         let (mut ctx_a, mut ctx_b) = test_st_context(8);
         let (mut leader, mut follower) = mock_vm();
 
@@ -110,7 +110,7 @@ mod tests {
 
             let msg_ref = vm.alloc_vec(msg.len()).unwrap();
             vm.mark_public(msg_ref).unwrap();
-            vm.assign(msg_ref, msg.to_vec()).unwrap();
+            vm.assign(msg_ref, msg.clone()).unwrap();
             vm.commit(msg_ref).unwrap();
 
             let mut inner = ipad_partial(vm, key_ref).unwrap();

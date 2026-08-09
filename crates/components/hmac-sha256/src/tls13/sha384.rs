@@ -102,3 +102,39 @@ impl Sha384 {
         vm.call(call)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::mock_vm;
+    use mpz_common::context::test_st_context;
+    use mpz_vm_core::{memory::MemoryExt, prelude::ViewExt, Execute};
+    use sha2::{Digest, Sha384 as ClearSha384};
+
+    #[tokio::test]
+    async fn streaming_sha384_matches_reference_across_blocks() {
+        let message: Vec<u8> = (0..=255).cycle().take(3072).collect();
+        let (mut ctx_a, mut ctx_b) = test_st_context(8);
+        let (mut leader, mut follower) = mock_vm();
+        let run = |vm: &mut (dyn Vm<Binary> + Send)| {
+            let input = vm.alloc_vec(message.len()).unwrap();
+            vm.mark_public(input).unwrap();
+            vm.assign(input, message.clone()).unwrap();
+            vm.commit(input).unwrap();
+            let mut hash = Sha384::new_with_init(vm).unwrap();
+            hash.update(&input);
+            let output = hash.finalize(vm).unwrap();
+            vm.decode(output).unwrap()
+        };
+        let mut lo = run(&mut leader);
+        let mut fo = run(&mut follower);
+        tokio::try_join!(
+            async { leader.execute_all(&mut ctx_a).await },
+            async { follower.execute_all(&mut ctx_b).await },
+        ).unwrap();
+        let actual = lo.try_recv().unwrap().unwrap();
+        assert_eq!(actual, fo.try_recv().unwrap().unwrap());
+        let expected: [u8; 48] = ClearSha384::digest(&message).into();
+        assert_eq!(actual, expected);
+    }
+}
