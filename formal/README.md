@@ -148,6 +148,10 @@ The component now exports VM-native SHA-384 Finished computation from a
 secret-shared 48-byte Finished key and public transcript hash, preserving the
 no-key-decode boundary for the eventual suite callback.
 
+MPC-TLS now exposes a state-level SHA-384 Finished callback that jointly
+executes the VM and decodes only the public 48-byte verify data; its two-party
+integration test is part of the executable validation evidence.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

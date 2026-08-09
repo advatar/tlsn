@@ -7,7 +7,7 @@ use hmac_sha256::Sha384ApplicationKeys;
 use mpz_common::Context;
 use mpz_memory_core::{
     binary::{Binary, U8},
-    Array,
+    Array, MemoryExt,
 };
 use mpz_vm_core::Vm as VmTrait;
 use sha2::Sha256;
@@ -331,6 +331,34 @@ impl Tls13KeyState {
             server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
         });
         Ok(())
+    }
+
+    /// Computes public SHA-384 Finished verify data from a retained Finished
+    /// key; the key itself never leaves the VM.
+    #[allow(dead_code)]
+    pub(crate) async fn sha384_finished_vd(
+        &self,
+        ctx: &mut Context,
+        vm: &mut (dyn VmTrait<Binary> + Send),
+        transcript_hash: [u8; 48],
+        server: bool,
+    ) -> Result<[u8; 48], MpcTlsError> {
+        let keys = self
+            .keys
+            .sha384_handshake
+            .as_ref()
+            .ok_or_else(|| MpcTlsError::state("SHA-384 handshake keys are not installed"))?;
+        let key = if server { keys.server_finished_key } else { keys.client_finished_key };
+        let output = hmac_sha256::finished_sha384_from_key(vm, key, transcript_hash)
+            .map_err(MpcTlsError::from)?;
+        let mut decoded = vm.decode(output).map_err(MpcTlsError::hs)?;
+        mpz_vm_core::Execute::execute_all(vm, ctx)
+            .await
+            .map_err(MpcTlsError::hs)?;
+        decoded
+            .try_recv()
+            .map_err(MpcTlsError::hs)?
+            .ok_or_else(|| MpcTlsError::hs("SHA-384 Finished verify data is not decoded"))
     }
 
     /// Installs typed SHA-384/AES-256 application views without decoding keys.
@@ -999,6 +1027,35 @@ mod tests {
         assert_eq!(keys.server.epoch(), Epoch::Application);
         assert_eq!(keys.client.next_sequence(), 0);
         assert_eq!(keys.server.next_sequence(), 0);
+    }
+
+    #[tokio::test]
+    async fn sha384_finished_callback_returns_public_verify_data() {
+        let secret = [0x33u8; 48];
+        let transcript = [0x44u8; 48];
+        let (mut ctx_a, mut ctx_b) = test_st_context(8);
+        let (mut vm_a, mut vm_b) = mock_vm();
+        let setup = |vm: &mut (dyn Vm<Binary> + Send)| {
+            let secret_ref: Array<U8, 48> = vm.alloc().unwrap();
+            vm.mark_public(secret_ref).unwrap();
+            vm.assign(secret_ref, secret).unwrap();
+            vm.commit(secret_ref).unwrap();
+            secret_ref
+        };
+        let secret_a = setup(&mut vm_a);
+        let secret_b = setup(&mut vm_b);
+        let mut state_a = Tls13KeyState::new(Mode::Normal, Role::Leader);
+        let mut state_b = Tls13KeyState::new(Mode::Normal, Role::Follower);
+        tokio::try_join!(
+            state_a.set_sha384_handshake_keys(&mut ctx_a, &mut vm_a, secret_a, transcript),
+            state_b.set_sha384_handshake_keys(&mut ctx_b, &mut vm_b, secret_b, transcript),
+        ).unwrap();
+        let (client, server) = tokio::try_join!(
+            state_a.sha384_finished_vd(&mut ctx_a, &mut vm_a, transcript, false),
+            state_b.sha384_finished_vd(&mut ctx_b, &mut vm_b, transcript, false),
+        ).unwrap();
+        assert_eq!(client, server);
+        assert_eq!(client.len(), 48);
     }
 
     #[test]
