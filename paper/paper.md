@@ -92,20 +92,21 @@ The evaluated profile is TLS 1.3 with
 and no 0-RTT, resumption, or `KeyUpdate` claim. Denial of service and side
 channels are outside the initial theorem boundary.
 
-The suite restriction is a deliberate fail-closed capability boundary. The
-implementation rejects other TLS 1.3 suites before key installation because
-the pinned MPC hash stack currently exposes SHA-256 but not SHA-384. The
-generalization plan, including the required 48-byte transcript/HKDF path and a
-separate ChaCha20-Poly1305 circuit milestone, is documented in
-`docs/research/tls13-cipher-suite-generalization.md`.
-As groundwork, the repository now includes clear SHA-384 HKDF and
-`HkdfLabel` reference functions with tests; these are oracles for a future MPC
-implementation and are not used as a secret-processing fallback.
+The suite restriction remains a deliberate fail-closed capability boundary:
+the production backend still rejects other TLS 1.3 suites before live key
+installation. Since the initial analysis, the repository has supplied the
+missing MPZ SHA-384 compression circuit and integrated secret-shared
+SHA-384/HMAC/HKDF, typed handshake/application key material, and 48-byte
+Finished computation. These additions are reference-tested and formally
+gated, but do not by themselves establish live suite negotiation.
+The remaining generalization plan, including ChaCha20-Poly1305, is documented
+in `docs/research/tls13-cipher-suite-generalization.md`.
 The formal suite boundary also includes a separate Tamarin model for
 `TLS_AES_256_GCM_SHA384`: three lemmas verify SHA-384 Finished acceptance,
 Finished-before-application-secret ordering, and transcript-context binding.
 This is symbolic evidence only; AES-256 negotiation remains disabled in the
-production backend until the concrete key schedule and circuit are integrated.
+production backend until the concrete suite dispatch and callback plumbing are
+integrated.
 
 The prover occupies several adversarial roles simultaneously:
 
