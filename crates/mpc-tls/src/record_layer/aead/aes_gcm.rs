@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, future::Future, sync::Arc};
 
-use cipher::{aes::Aes128, Cipher, CtrBlock, Keystream};
+use cipher::{aes::{Aes128, Aes256}, Cipher, CtrBlock, Keystream};
 use mpz_circuits::circuits::xor;
 use mpz_common::{Context, Flush};
 use mpz_fields::gf2_128::Gf2_128;
@@ -68,6 +68,7 @@ pub(crate) struct MpcAesGcm {
     role: Role,
     aes: Aes128,
     tls13_aes: Aes128,
+    tls13_aes256: Aes256,
     state: State,
 }
 
@@ -81,6 +82,7 @@ impl MpcAesGcm {
             role,
             aes: Aes128::default(),
             tls13_aes: Aes128::default(),
+            tls13_aes256: Aes256::default(),
             state: State::Init {
                 ghash: Box::new(MpcGhash::new(converter)),
             },
@@ -176,6 +178,25 @@ impl MpcAesGcm {
         Ok(())
     }
 
+    /// Binds the TLS 1.3 AES-256/SHA-384 GHASH domain to a shared key.
+    pub(crate) fn prepare_tls13_key_256(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        key: Array<U8, 32>,
+    ) -> Result<(), AeadError> {
+        let State::Setup { ghash_key_shares, .. } = &mut self.state else {
+            return Err(AeadError::state("must be in setup state to prepare TLS 1.3 AES-256 key"));
+        };
+        self.tls13_aes256.set_key(key);
+        let zero: Array<U8, 16> = vm.alloc()?;
+        vm.mark_public(zero)?;
+        vm.assign(zero, [0u8; 16])?;
+        vm.commit(zero)?;
+        let ghash_key = self.tls13_aes256.alloc_block(vm, zero)?;
+        ghash_key_shares.push(OneTimePadShared::<[u8; 16]>::new(self.role, ghash_key, vm)?);
+        Ok(())
+    }
+
     /// Preallocates bounded TLS 1.3 record circuits in the initial VM graph.
     pub(crate) fn alloc_tls13_records(
         &mut self,
@@ -235,6 +256,38 @@ impl MpcAesGcm {
             });
         }
 
+        Ok(())
+    }
+
+    /// Preallocates TLS 1.3 AES-256 record circuits against a secret IV.
+    pub(crate) fn alloc_tls13_records_256(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        iv: Array<U8, 12>,
+        records: usize,
+        max_len: usize,
+    ) -> Result<(), AeadError> {
+        use crate::tls13::nonce::split_iv_and_derive_nonce;
+        let State::Setup { tls13_records, .. } = &mut self.state else {
+            return Err(AeadError::state("must be in setup state to allocate TLS 1.3 AES-256 records"));
+        };
+        let padded_len = 16 * max_len.div_ceil(16);
+        for sequence in 0..records as u64 {
+            let (prefix, nonce) = split_iv_and_derive_nonce(vm, iv, sequence).map_err(|err| AeadError::cipher(err.to_string()))?;
+            self.tls13_aes256.set_iv(prefix);
+            let keystream = self.tls13_aes256.alloc_keystream_with_nonce(vm, padded_len, nonce)?;
+            let leader_input = vm.alloc_vec::<U8>(padded_len)?;
+            let follower_input = vm.alloc_vec::<U8>(padded_len)?;
+            match self.role { Role::Leader => { vm.mark_private(leader_input)?; vm.mark_blind(follower_input)?; }, Role::Follower => { vm.mark_blind(leader_input)?; vm.mark_private(follower_input)?; } }
+            let input: Vector<U8> = vm.call(CallBuilder::new(Arc::new(xor(padded_len * 8))).arg(leader_input).arg(follower_input).build().map_err(|err| AeadError::cipher(err.to_string()))?)?;
+            let output = keystream.apply(vm, input)?;
+            let mut ctr = START_CTR..;
+            keystream.assign_counters(vm, move || ctr.next().expect("range is unbounded").to_be_bytes())?;
+            let j0 = self.tls13_aes256.alloc_ctr_block_with_nonce(vm, nonce)?;
+            let j0_shared = OneTimePadShared::<[u8; 16]>::new(self.role, j0.output, vm)?;
+            assign_j0_counter(vm, j0)?;
+            tls13_records.push_back(Tls13Record { leader_input, follower_input, output, j0: j0_shared });
+        }
         Ok(())
     }
 
@@ -328,6 +381,20 @@ impl MpcAesGcm {
         Ok((keystream, j0, j0_shared))
     }
 
+    /// Allocates one AES-256 TLS 1.3 record against a secret nonce.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn alloc_record_tls13_256(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        nonce: Nonce,
+        len: usize,
+    ) -> Result<(Keystream<Nonce, Ctr, Block>, CtrBlock<Nonce, Ctr, Block>, OneTimePadShared<[u8; 16]>), AeadError> {
+        let keystream = self.tls13_aes256.alloc_keystream_with_nonce(vm, len, nonce)?;
+        let j0 = self.tls13_aes256.alloc_ctr_block_with_nonce(vm, nonce)?;
+        let j0_shared = OneTimePadShared::<[u8; 16]>::new(self.role, j0.output, vm)?;
+        Ok((keystream, j0, j0_shared))
+    }
+
     pub(crate) async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), AeadError> {
         let State::Setup { ghash, .. } = &mut self.state else {
             return Err(AeadError::state("must be in setup state to preprocess"));
@@ -356,6 +423,11 @@ impl MpcAesGcm {
     /// the unused TLS 1.2 key schedule.
     pub(crate) async fn setup_tls13(&mut self, ctx: &mut Context) -> Result<(), AeadError> {
         self.setup_key_domain(ctx, 1).await
+    }
+
+    /// Sets up the AES-256/SHA-384 application GHASH key domain.
+    pub(crate) async fn setup_tls13_256(&mut self, ctx: &mut Context) -> Result<(), AeadError> {
+        self.setup_key_domain(ctx, 2).await
     }
 
     async fn setup_key_domain(

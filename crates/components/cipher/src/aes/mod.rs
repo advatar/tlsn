@@ -8,8 +8,10 @@ use mpz_vm_core::{prelude::*, Call, Vm};
 use std::fmt::Debug;
 
 mod error;
+mod aes256;
 
 pub use error::AesError;
+pub use aes256::Aes256;
 use error::ErrorKind;
 
 /// AES key schedule: 11 round keys, 16 bytes each.

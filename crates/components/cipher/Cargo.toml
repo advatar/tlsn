@@ -18,6 +18,7 @@ name = "cipher"
 mpz-circuits = { workspace = true, features = ["aes"] }
 mpz-vm-core = { workspace = true }
 mpz-memory-core = { workspace = true }
+tlsn-hmac-sha256 = { workspace = true }
 
 async-trait = { workspace = true }
 thiserror = { workspace = true }

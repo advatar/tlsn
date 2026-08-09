@@ -8056,6 +8056,7 @@ dependencies = [
  "mpz-memory-core",
  "mpz-vm-core",
  "thiserror 1.0.69",
+ "tlsn-hmac-sha256",
  "tokio",
 ]
 
@@ -8244,6 +8245,7 @@ dependencies = [
 name = "tlsn-hmac-sha256"
 version = "0.1.0-alpha.15-pre"
 dependencies = [
+ "aes 0.8.4",
  "bincode 1.3.3",
  "criterion",
  "hex",

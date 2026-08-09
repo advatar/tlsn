@@ -65,10 +65,13 @@ fn mix_column(b: &mut CircuitBuilder, c: [Byte; 4]) -> [Byte; 4] {
     [xor(b, a0, b0), xor(b, a1, b1), xor(b, a2, b2), xor(b, a3, b3)]
 }
 
-/// Builds `fn(key: [u8; 32], block: [u8; 16]) -> [u8; 16]`.
+/// Builds `fn(key: [u8; 32], iv: [u8; 4], nonce: [u8; 8], counter: [u8; 4], block: [u8; 16]) -> [u8; 16]`.
 pub fn aes256_encrypt_circuit() -> Circuit {
     let mut b = CircuitBuilder::new();
     let key: [Byte; 32] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let _iv: [Byte; 4] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let _nonce: [Byte; 8] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let _counter: [Byte; 4] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
     let input: [Byte; 16] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
     let mut words: Vec<[Byte; 4]> = (0..8).map(|i| [key[4*i], key[4*i+1], key[4*i+2], key[4*i+3]]).collect();
     let mut rc = 1u8;
@@ -102,14 +105,17 @@ mod tests {
             0x1f,0x35,0x2c,0x07,0x3b,0x61,0x08,0xd7,0x2d,0x98,0x10,0xa3,0x09,0x14,0xdf,0xf4,
         ];
         let block = [0x6b,0xc1,0xbe,0xe2,0x2e,0x40,0x9f,0x96,0xe9,0x3d,0x7e,0x11,0x73,0x93,0x17,0x2a];
-        let output: [u8; 16] = evaluate!(aes256_encrypt_circuit(), key, block).unwrap();
+        let iv = [0u8; 4];
+        let nonce = [0u8; 8];
+        let counter = [0u8, 0, 0, 1];
+        let output: [u8; 16] = evaluate!(aes256_encrypt_circuit(), key, iv, nonce, counter, block).unwrap();
         let cipher = aes::Aes256::new_from_slice(&key).unwrap();
         let mut expected = block.into();
         cipher.encrypt_block(&mut expected);
         let expected: [u8; 16] = expected.into();
         assert_eq!(output, expected);
 
-        let embedded: [u8; 16] = evaluate!(AES256_ENCRYPT, key, block).unwrap();
+        let embedded: [u8; 16] = evaluate!(AES256_ENCRYPT, key, iv, nonce, counter, block).unwrap();
         assert_eq!(embedded, expected);
     }
 }
