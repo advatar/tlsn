@@ -402,19 +402,22 @@ impl MpcTlsFollower {
                 }
                 Message::Tls13HandshakeHash(Tls13HandshakeHash { handshake_hash }) => {
                     debug!("setting TLS 1.3 application handshake hash");
-                    let handshake_hash: [u8; 32] = handshake_hash
-                        .try_into()
-                        .map_err(|_| MpcTlsError::hs("SHA-256 handshake hash must be 32 bytes"))?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
-
-                    tls13
-                        .set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash)
-                        .await?;
-                    drop(vm);
-                    record_layer.setup_tls13(&mut self.ctx).await?;
-                    debug!("TLS 1.3 application record layer is ready");
+                    match handshake_hash.len() {
+                        32 => {
+                            tls13.set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash.try_into().unwrap()).await?;
+                            drop(vm);
+                            record_layer.setup_tls13(&mut self.ctx).await?;
+                            debug!("TLS 1.3 SHA-256 application record layer is ready");
+                        }
+                        48 => {
+                            tls13.set_sha384_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash.try_into().unwrap()).await?;
+                            debug!("TLS 1.3 SHA-384 handshake epochs are ready; application epoch follows suite dispatch");
+                        }
+                        _ => return Err(MpcTlsError::hs("TLS 1.3 handshake hash must be 32 or 48 bytes")),
+                    }
                 }
                 Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
                     handshake_hash: _,
