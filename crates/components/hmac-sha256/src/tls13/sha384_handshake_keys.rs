@@ -1,8 +1,9 @@
 //! Typed secret-shared SHA-384 TLS 1.3 handshake key material.
 
-use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, Vm};
+use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, prelude::MemoryExt, Vm};
 use crate::FError;
-use super::hkdf384::HkdfExpand384;
+use super::{hkdf384::HkdfExpand384, hkdf_extract384::HkdfExtract384};
+use crate::Mode;
 
 /// SHA-384 handshake traffic keys, IVs, and Finished keys.
 #[derive(Debug)]
@@ -16,6 +17,29 @@ pub struct Sha384HandshakeKeys {
 }
 
 impl Sha384HandshakeKeys {
+    /// Allocates the TLS 1.3 no-PSK SHA-384 schedule from a shared ECDHE
+    /// secret. This performs `early_secret`, `derived_secret`, and
+    /// `handshake_secret` before expanding the traffic keys.
+    pub fn alloc_from_shared_secret(
+        mode: Mode,
+        vm: &mut dyn Vm<Binary>,
+        shared_secret: Array<U8, 32>,
+        transcript_hash: &[u8; 48],
+    ) -> Result<Self, FError> {
+        let empty_salt = vm.alloc_vec(0).map_err(FError::vm)?;
+        let empty_ikm = vm.alloc_vec(0).map_err(FError::vm)?;
+        let early = HkdfExtract384::alloc(mode, vm, empty_salt, &[empty_ikm])?;
+        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48)?;
+        derived.set_context(vm, &[])?;
+        let handshake = HkdfExtract384::alloc(
+            mode,
+            vm,
+            derived.output()?.into(),
+            &[shared_secret.into()],
+        )?;
+        Self::alloc(vm, handshake.output().into(), transcript_hash)
+    }
+
     /// Allocates handshake material from a secret-shared handshake secret.
     pub fn alloc(
         vm: &mut dyn Vm<Binary>,
