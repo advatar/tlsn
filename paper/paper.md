@@ -152,6 +152,80 @@ epoch proofs establish uniqueness of the directional generation/sequence pair;
 binding this identifier through MPC allocation, release derivation,
 commitments, and presentation is an explicit refinement obligation.
 
+## Concrete implementation
+
+The implementation is organized as a layered Rust pipeline rather than as a
+single monolithic TLS proof. The TLS-facing MPC-TLS crate owns handshake
+state, transcript messages, epochs, and record orchestration. The
+`tlsn-hmac-sha256` component crate owns the PRF circuits and exposes VM memory
+references to their outputs. The record layer consumes those references through
+the MPZ VM; it does not receive a decoded application key.
+
+### Handshake and key schedule
+
+For the evaluated SHA-256 profile, `Tls13KeySched` follows the TLS 1.3 stages:
+
+1. the key-exchange component produces the pre-master secret;
+2. `HandshakeSecrets` computes the handshake secret and the client/server
+   handshake traffic secrets with HKDF-Extract and HKDF-Expand-Label;
+3. the ClientHello transcript hash is supplied before handshake key material
+   is completed;
+4. Finished verification precedes application-secret installation; and
+5. the final transcript hash drives the client/server application traffic
+   secrets and their `key` and `iv` labels.
+
+The schedule is stateful. Invalid transitions, repeated hash installation, and
+sequence exhaustion return errors. The application key outputs are retained as
+typed MPZ `Array<U8, 16>` and `Array<U8, 12>` views. The leader may learn the
+legacy handshake keys for the currently evaluated AES-128 handshake boundary,
+but application keys remain VM references and are not decoded.
+
+### The SHA-384 circuit added for AES-256 work
+
+The pinned MPZ distribution contains SHA-256 circuit data but no SHA-384
+compression circuit. We therefore construct the SHA-384/SHA-512 compression
+circuit locally in `sha384_circuit.rs`. It contains the eight SHA-384 initial
+state words, all 80 SHA-512 round constants, 64-bit modular additions,
+rotations, `Ch` and `Maj`, and the message schedule. `sha384_vm.rs` adapts the
+static circuit to MPZ VM calls; `sha384.rs` supplies streaming block handling,
+TLS-compatible 128-bit length padding, and serialization of the first six
+64-bit state words into 48 bytes.
+
+The circuit is not a cleartext fallback. `hmac384.rs` computes secret-shared
+ipad/opad partial states and HMAC-SHA384; `hkdf_extract384.rs` accepts one or
+more secret-shared IKM vectors (including the hybrid key-exchange case), and
+`hkdf384.rs` implements the TLS 1.3 `HkdfLabel` expansion. Typed 32-byte key
+and 12-byte IV views are obtained from the 48-byte SHA-384 expansion without
+decoding the surrounding secret. Handshake and application modules then derive
+`c hs traffic`, `s hs traffic`, `c ap traffic`, and `s ap traffic`, followed by
+the `key`, `iv`, and `finished` labels. Finished verification is an HMAC over
+the 48-byte transcript hash and returns only public verify data.
+
+The implementation has separate reference tests for compression, multi-block
+streaming, HMAC, HKDF-Extract, HKDF-Expand-Label, handshake material,
+application material, and Finished output. These tests execute both MPZ
+parties and compare the result with `sha2`, `hmac`, and clear TLS 1.3 oracle
+functions.
+
+### Epochs, records, and release
+
+`WriteEpoch<K, I>` and `ReadEpoch<K, I>` own the traffic key, IV, generation,
+and next sequence number. Reservation occurs immediately before encryption or
+authentication, including failed authentication attempts. The nonce helper
+XORs the big-endian sequence into the low 64 bits of the 96-bit IV. The
+production AES-128 path uses the existing joint GCM record implementation and
+the authenticated-release capsule. A separately tested AES-256-GCM path uses
+the same AAD, padding, sequence, and nonce rules with a 32-byte key; it is
+currently an integration path, not a negotiated production suite.
+
+The SHA-384 work is connected to MPC-TLS through typed handshake and
+application epoch slots. Both parties execute the allocator, and the state
+level Finished callback decodes only the resulting public 48-byte verify data.
+Inter-party transcript and Finished messages are length-delimited so they can
+carry SHA-384 values. The live handshake still rejects
+`TLS_AES_256_GCM_SHA384` until suite selection, 48-byte transcript callbacks,
+and the AES-256 record-layer dispatch are enabled together.
+
 # Formal analysis
 
 ## Symbolic model
@@ -285,6 +359,15 @@ branch. All five cases passed: nginx RSA, nginx ECDSA, Apache RSA, Caddy RSA,
 and OpenSSL `s_server`. The exact command is `./formal/interop.sh`; the focused
 fixture and core validation are run by `./formal/validate.sh`.
 
+The implementation-facing reproducibility split is intentional:
+`cargo test -p tlsn-hmac-sha256 --lib` exercises the 32 SHA-384 component and
+reference tests; `cargo test -p tlsn-mpc-tls` exercises typed epochs, AES-256
+record round trips, SHA-384 epoch installation, and the public Finished
+callback; `formal/validate.sh` adds the TLS 1.3 fixture; and `formal/verify.sh`
+adds the focused integration tests before running the theorem checkers. This
+separates circuit/reference equivalence evidence from protocol interoperability
+evidence and from symbolic proof evidence.
+
 # Claim--evidence matrix
 
 | Claim | Evidence now | Missing evidence |
@@ -293,6 +376,9 @@ fixture and core validation are run by `./formal/validate.sh`.
 | Authenticated release implies modeled server provenance | Tamarin theorem | Computational MPC composition; concrete handshake binding |
 | Epoch sequences do not wrap or repeat locally | Lean and Kani | Concurrent whole-program refinement |
 | Fixed-IV nonce derivation is injective | Lean and Kani | Circuit/reference equivalence |
+| SHA-384 compression and streaming match clear references | MPZ two-party tests, multi-block vectors | Computational circuit proof and whole-program refinement |
+| SHA-384 handshake/application key widths are preserved | Typed VM views and Lean width theorem | Rust-to-TLS parser/suite refinement |
+| SHA-384 Finished output is public while its key stays secret-shared | Two-party MPC-TLS callback test | Full malicious-party composition |
 | Full proof transcript is authentic | Tamarin handshake/transcript model plus end-to-end tests | Concrete HKDF/parser refinement and end-to-end composition |
 | Selective disclosure preserves the public projection | Minimal Tamarin observational-equivalence model | Production leakage function and serialization refinement |
 
