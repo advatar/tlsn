@@ -388,8 +388,9 @@ fn validate_close_notify(record: &Record, side: &str) -> Result<(), TlsTranscrip
         ))?;
 
     let mut reader = Reader::init(payload);
-    let payload = AlertMessagePayload::read(&mut reader)
-        .ok_or(TlsTranscriptError::validation("alert message was malformed"))?;
+    let payload = AlertMessagePayload::read(&mut reader).ok_or(TlsTranscriptError::validation(
+        "alert message was malformed",
+    ))?;
 
     let AlertDescription::CloseNotify = payload.description else {
         return Err(TlsTranscriptError::validation(format!(
