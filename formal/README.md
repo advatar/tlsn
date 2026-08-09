@@ -87,6 +87,10 @@ model-checking step is required to connect them to the Rust implementation.
 prefix structure used by the Rust encoder. It intentionally does not claim
 cryptographic HMAC correctness.
 
+`lean/Tls13Sha384.lean` checks the SHA-384/AES-256 width domain: 48-byte
+hashes, 32-byte traffic keys, 12-byte IVs, 16-byte GCM tags, and fixed TLS
+label overhead. It is executed by `formal/verify.sh`.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

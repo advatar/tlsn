@@ -10,6 +10,7 @@ trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output" 
 
 lean formal/lean/Tls13Epoch.lean
 lean formal/lean/Tls13HkdfLabel.lean
+lean formal/lean/Tls13Sha384.lean
 cargo kani -p tlsn-mpc-tls --quiet --output-format terse
 
 tamarin-prover --prove --quiet "$model" | tee "$proof_output"
