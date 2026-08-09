@@ -394,9 +394,11 @@ impl MpcTlsFollower {
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
 
-                    tls13
-                        .set_hello_hash(&mut self.ctx, &mut *vm, hello_hash)
-                        .await?;
+                    match hello_hash.len() {
+                        32 => tls13.set_hello_hash(&mut self.ctx, &mut *vm, hello_hash.try_into().unwrap()).await?,
+                        48 => tls13.set_sha384_handshake_hash(&mut self.ctx, &mut *vm, hello_hash.try_into().unwrap()).await?,
+                        _ => return Err(MpcTlsError::hs("TLS 1.3 hello hash must be 32 or 48 bytes")),
+                    }
                     debug!("TLS 1.3 application AEAD circuits preallocated");
                     debug!("TLS 1.3 hello hash set");
                 }

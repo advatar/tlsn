@@ -874,10 +874,6 @@ impl Backend for MpcTlsLeader {
     }
 
     async fn set_hs_hash_server_hello(&mut self, hash: Vec<u8>) -> Result<(), BackendError> {
-        let hash: [u8; 32] = hash
-            .try_into()
-            .map_err(|_| MpcTlsError::hs("server hello handshake hash is not 32 bytes"))?;
-
         let State::Handshake {
             ctx,
             vm,
@@ -892,17 +888,18 @@ impl Backend for MpcTlsLeader {
         if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
             debug!("setting TLS 1.3 hello hash");
             ctx.io_mut()
-                .send(Message::Tls13HelloHash(Tls13HelloHash { hello_hash: hash }))
+                .send(Message::Tls13HelloHash(Tls13HelloHash { hello_hash: hash.clone() }))
                 .await
                 .map_err(MpcTlsError::from)?;
 
             let mut vm = vm
                 .try_lock()
                 .map_err(|_| MpcTlsError::other("VM lock is held"))?;
-            tls13
-                .set_hello_hash(ctx, &mut *vm, hash)
-                .await
-                .map_err(MpcTlsError::hs)?;
+            match hash.len() {
+                32 => tls13.set_hello_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
+                48 => tls13.set_sha384_handshake_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
+                _ => return Err(MpcTlsError::hs("TLS 1.3 hello hash must be 32 or 48 bytes").into()),
+            }
             debug!("TLS 1.3 application AEAD circuits preallocated");
             debug!("TLS 1.3 hello hash set");
         }
