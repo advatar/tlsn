@@ -184,6 +184,8 @@ pub struct Tls13SessionKeys {
 pub(crate) struct Tls13KeyState {
     inner: Tls13KeySched,
     keys: Tls13SessionKeys,
+    /// Shared ECDHE input retained for a later SHA-384 schedule selection.
+    sha384_shared_secret: Option<Array<U8, 32>>,
 }
 
 impl Tls13KeyState {
@@ -196,6 +198,7 @@ impl Tls13KeyState {
         Self {
             inner: Tls13KeySched::new(mode, key_schedule_role),
             keys: Tls13SessionKeys::default(),
+            sha384_shared_secret: None,
         }
     }
 
@@ -204,7 +207,38 @@ impl Tls13KeyState {
         vm: &mut dyn VmTrait<Binary>,
         pms: Array<U8, 32>,
     ) -> Result<(), MpcTlsError> {
+        self.sha384_shared_secret = Some(pms);
         self.inner.alloc(vm, pms).map_err(MpcTlsError::from)
+    }
+
+    /// Installs SHA-384 handshake epochs from the retained shared ECDHE input.
+    pub(crate) async fn set_sha384_handshake_hash(
+        &mut self,
+        ctx: &mut Context,
+        vm: &mut (dyn VmTrait<Binary> + Send),
+        transcript_hash: [u8; 48],
+    ) -> Result<(), MpcTlsError> {
+        let shared_secret = self
+            .sha384_shared_secret
+            .ok_or_else(|| MpcTlsError::state("SHA-384 shared secret is not allocated"))?;
+        let mut material = hmac_sha256::Sha384HandshakeKeys::alloc_from_shared_secret(
+            hmac_sha256::Mode::Normal,
+            vm,
+            shared_secret,
+            &transcript_hash,
+        )
+        .map_err(MpcTlsError::from)?;
+        material.set_context(vm).map_err(MpcTlsError::from)?;
+        mpz_vm_core::Execute::execute_all(vm, ctx)
+            .await
+            .map_err(MpcTlsError::hs)?;
+        self.keys.sha384_handshake = Some(Tls13Sha384HandshakeKeys {
+            client: WriteEpoch::new(Epoch::Handshake, 0, material.client_key().map_err(MpcTlsError::from)?, material.client_iv().map_err(MpcTlsError::from)?),
+            client_finished_key: material.client_finished().map_err(MpcTlsError::from)?,
+            server: ReadEpoch::new(Epoch::Handshake, 0, material.server_key().map_err(MpcTlsError::from)?, material.server_iv().map_err(MpcTlsError::from)?),
+            server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
+        });
+        Ok(())
     }
 
     pub(crate) fn allocated_application_keys(
