@@ -558,11 +558,7 @@ impl Backend for MpcTlsLeader {
         };
 
         if matches!(suite, SupportedCipherSuite::Tls13(_))
-            && !matches!(
-                suite.suite(),
-                CipherSuite::TLS13_AES_128_GCM_SHA256
-                    | CipherSuite::TLS13_AES_256_GCM_SHA384
-            )
+            && suite.suite() != CipherSuite::TLS13_AES_128_GCM_SHA256
         {
             return Err(BackendError::UnsupportedCiphersuite(suite.suite()));
         }

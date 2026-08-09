@@ -36,6 +36,7 @@
 - [x] Extend Tamarin/Lean/Kani artifacts with a suite-specific AES-256/SHA-384 symbolic key-schedule boundary.
 - [ ] Extend Lean/Kani artifacts for AES-256 epochs and suite negotiation, and connect the circuit to the concrete state machine.
 - [ ] Re-run adversarial tests and interoperability after enabling any additional TLS 1.3 suite.
+- [ ] Resolve AES-256 MPC evaluator stack overflow observed in nginx ECDSA interoperability before re-enabling negotiation.
 - [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
 - [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.
