@@ -26,6 +26,7 @@ pub use tls12::{PrfOutput, SessionKeys, Tls12Prf};
 pub use tls13::finished_sha384_from_key;
 pub use tls13::sha384_application::Sha384ApplicationKeys;
 pub use tls13::sha384_compress_circuit_for_generation;
+pub use tls13::aes256_circuit::{aes256_encrypt_circuit, AES256_ENCRYPT};
 pub use tls13::Sha384HandshakeKeys;
 pub use tls13::{ApplicationKeys, HandshakeKeys, Role, Tls13KeySched};
 

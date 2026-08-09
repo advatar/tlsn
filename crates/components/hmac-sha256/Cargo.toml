@@ -29,6 +29,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+aes = { workspace = true }
 mpz-ot = { workspace = true, features = ["ideal"] }
 mpz-garble = { workspace = true }
 mpz-common = { workspace = true, features = ["test-utils"] }

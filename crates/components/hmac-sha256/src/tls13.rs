@@ -26,6 +26,7 @@ mod sha384_reference;
 mod sha384_circuit;
 #[allow(dead_code)]
 mod sha384_vm;
+pub(crate) mod aes256_circuit;
 #[allow(dead_code)]
 mod sha384;
 #[allow(dead_code)]
