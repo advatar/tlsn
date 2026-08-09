@@ -40,9 +40,24 @@ fn sbox(b: &mut CircuitBuilder, x: Byte) -> Byte {
         let mut coeff = [false; 256];
         for (i, v) in SBOX.iter().enumerate() { coeff[i] = ((v >> out) & 1) != 0; }
         for bit in 0..8 { for mask in 0..256 { if (mask & (1 << bit)) != 0 { coeff[mask] ^= coeff[mask ^ (1 << bit)]; } } }
-        let mut result = b.get_const_zero();
-        for mask in 0..256 { if coeff[mask] { let mut term = b.get_const_one(); for bit in 0..8 { if (mask & (1 << bit)) != 0 { term = b.add_and_gate(term, x[bit]); } } result = b.add_xor_gate(result, term); } }
-        result
+        let mut terms = Vec::new();
+        for mask in 0..256 {
+            if coeff[mask] {
+                let mut term = b.get_const_one();
+                for bit in 0..8 {
+                    if (mask & (1 << bit)) != 0 { term = b.add_and_gate(term, x[bit]); }
+                }
+                terms.push(term);
+            }
+        }
+        while terms.len() > 1 {
+            let mut next = Vec::with_capacity(terms.len().div_ceil(2));
+            for pair in terms.chunks(2) {
+                next.push(if pair.len() == 2 { b.add_xor_gate(pair[0], pair[1]) } else { pair[0] });
+            }
+            terms = next;
+        }
+        terms.pop().unwrap_or_else(|| b.get_const_zero())
     })
 }
 
