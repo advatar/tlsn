@@ -115,6 +115,10 @@ open.
 The circuit evidence includes multi-block streaming SHA-384 and HMAC-SHA384
 reference tests, in addition to the TLS-sized one-block derivation tests.
 
+The MPC-TLS record module now has a tested AES-256-GCM TLS 1.3 round-trip
+helper over typed 32-byte key epochs. Suite negotiation and secret-shared key
+installation are intentionally still separate pending integration work.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

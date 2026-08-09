@@ -19,6 +19,7 @@
 - [x] Derive secret-shared SHA-384 application traffic secrets and typed 32-byte AES-256 keys/12-byte IV views, with reference equivalence.
 - [x] Compute secret-shared SHA-384 Finished MACs over transcript hashes, with reference equivalence.
 - [x] Verify SHA-384 streaming compression and HMAC across multi-block inputs against clear references.
+- [x] Add and test AES-256-GCM TLS 1.3 record encrypt/decrypt helpers with typed 32-byte epochs.
 - [ ] Integrate SHA-384 HKDF into a full TLS 1.3 key-schedule state machine with 48-byte Finished/transcript state.
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.

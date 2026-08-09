@@ -1,6 +1,6 @@
 pub(crate) mod nonce;
 
-use aes_gcm::{aead::AeadInPlace, Aes128Gcm, NewAead};
+use aes_gcm::{aead::AeadInPlace, Aes128Gcm, Aes256Gcm, NewAead};
 use hmac::{Hmac, Mac};
 use hmac_sha256::{Mode, Role as KeyScheduleRole, Tls13KeySched};
 use mpz_common::Context;
@@ -539,6 +539,65 @@ fn decrypt_tls13_record(
     ))
 }
 
+/// AES-256-GCM TLS 1.3 record encryption path.
+///
+/// This is kept separate from the legacy AES-128 helper until suite
+/// negotiation and secret-shared AES-256 key installation are wired into the
+/// handshake state machine.
+fn encrypt_tls13_record_256(
+    epoch: &mut WriteEpoch<[u8; 32], [u8; 12]>,
+    msg: PlainMessage,
+) -> Result<(OpaqueMessage, Record), MpcTlsError> {
+    let typ = msg.typ;
+    let plaintext = msg.payload.0;
+    let mut payload = plaintext.clone();
+    payload.push(typ.get_u8());
+    let total_len = payload.len() + 16;
+    let aad = make_tls13_aad(total_len);
+    let cipher = Aes256Gcm::new_from_slice(&epoch.key)
+        .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm key initialization failed"))?;
+    let seq = epoch.reserve_sequence()?;
+    let nonce = make_tls13_nonce(epoch.iv, seq);
+    let tag = cipher
+        .encrypt_in_place_detached((&nonce).into(), &aad, &mut payload)
+        .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm record encryption failed"))?;
+    let record = Record {
+        seq,
+        typ: TranscriptContentType::from(typ),
+        plaintext: Some(plaintext),
+        explicit_nonce: Vec::new(),
+        ciphertext: payload.clone(),
+        tag: Some(tag.to_vec()),
+    };
+    payload.extend_from_slice(&tag);
+    Ok((OpaqueMessage { typ: ContentType::ApplicationData, version: ProtocolVersion::TLSv1_2, payload: Payload::new(payload) }, record))
+}
+
+/// AES-256-GCM TLS 1.3 record decryption path.
+fn decrypt_tls13_record_256(
+    epoch: &mut ReadEpoch<[u8; 32], [u8; 12]>,
+    msg: OpaqueMessage,
+) -> Result<(PlainMessage, Record), MpcTlsError> {
+    if msg.typ != ContentType::ApplicationData || msg.version != ProtocolVersion::TLSv1_2 {
+        return Err(MpcTlsError::hs("unexpected TLS 1.3 record header"));
+    }
+    let mut payload = msg.payload.0;
+    if payload.len() < 16 { return Err(MpcTlsError::hs("tls13 record payload is shorter than the tag")); }
+    let tag = payload.split_off(payload.len() - 16);
+    let ciphertext = payload.clone();
+    let aad = make_tls13_aad(payload.len() + 16);
+    let cipher = Aes256Gcm::new_from_slice(&epoch.key)
+        .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm key initialization failed"))?;
+    let seq = epoch.reserve_sequence()?;
+    let nonce = make_tls13_nonce(epoch.iv, seq);
+    cipher.decrypt_in_place_detached((&nonce).into(), &aad, &mut payload, tag.as_slice().into())
+        .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm record authentication failed"))?;
+    let typ = unpad_tls13(&mut payload)?;
+    let plaintext = payload;
+    let record = Record { seq, typ: TranscriptContentType::from(typ), plaintext: Some(plaintext.clone()), explicit_nonce: Vec::new(), ciphertext, tag: Some(tag) };
+    Ok((PlainMessage { typ, version: ProtocolVersion::TLSv1_3, payload: Payload::new(plaintext) }, record))
+}
+
 fn make_tls13_nonce(iv: [u8; 12], sequence: u64) -> [u8; 12] {
     let mut nonce = iv;
     for (byte, seq) in nonce[4..].iter_mut().zip(sequence.to_be_bytes()) {
@@ -634,7 +693,7 @@ mod verification {
 
 #[cfg(test)]
 mod tests {
-    use super::{decrypt_tls13_record, encrypt_tls13_record, ReadEpoch, Tls13KeyState, WriteEpoch};
+    use super::{decrypt_tls13_record, decrypt_tls13_record_256, encrypt_tls13_record, encrypt_tls13_record_256, ReadEpoch, Tls13KeyState, WriteEpoch};
     use crate::{Epoch, Role};
     use hmac_sha256::Mode;
     use mpz_common::{context::test_st_context, Context};
@@ -786,6 +845,25 @@ mod tests {
 
         let finished = leader.server_finished_vd(handshake_hash).unwrap();
         assert_ne!(finished, [0u8; 32]);
+    }
+
+    #[test]
+    fn aes256_tls13_record_round_trip() {
+        let message = PlainMessage {
+            typ: ContentType::ApplicationData,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(b"sha384 circuit path".to_vec()),
+        };
+        let key = [0x42u8; 32];
+        let iv = [0x24u8; 12];
+        let mut writer = WriteEpoch::new(Epoch::Application, 0, key, iv);
+        let (wire, sent) = encrypt_tls13_record_256(&mut writer, message.clone()).unwrap();
+        assert_eq!(sent.seq, 0);
+        let mut reader = ReadEpoch::new(Epoch::Application, 0, key, iv);
+        let (received, record) = decrypt_tls13_record_256(&mut reader, wire).unwrap();
+        assert_eq!(record.seq, 0);
+        assert_eq!(received.payload.0, message.payload.0);
+        assert_eq!(received.typ, message.typ);
     }
 
     #[test]
