@@ -100,7 +100,7 @@ label overhead. It is executed by `formal/verify.sh`.
 The SHA-384 implementation also includes a secret-shared HKDF-Extract
 primitive accepting multiple IKM vectors (needed for hybrid key exchange),
 with equivalence coverage against the clear HMAC-SHA384 reference. Full
-SHA-384 TLS 1.3 key-schedule integration remains open.
+SHA-384 TLS 1.3 application-key and Finished-state integration remains open.
 
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and

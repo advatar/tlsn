@@ -8,6 +8,7 @@ use super::hmac384::{hmac_sha384, ipad_partial, opad_partial};
 #[derive(Debug)]
 pub(crate) struct HkdfExpand384 {
     outer: Option<super::sha384::Sha384>,
+    secret: Vector<U8>,
     label: &'static [u8],
     output_len: usize,
     output: Option<Array<U8, 48>>,
@@ -21,13 +22,12 @@ impl HkdfExpand384 {
         output_len: usize,
     ) -> Result<Self, FError> {
         if output_len > 48 { return Err(FError::state("SHA-384 expansion exceeds one block")); }
-        Ok(Self { outer: Some(opad_partial(vm, secret).map_err(|e| e)?), label, output_len, output: None })
+        Ok(Self { outer: Some(opad_partial(vm, secret).map_err(|e| e)?), secret, label, output_len, output: None })
     }
 
     pub(crate) fn set_context(
         &mut self,
         vm: &mut dyn Vm<Binary>,
-        secret: Vector<U8>,
         context: &[u8],
     ) -> Result<(), FError> {
         if self.output.is_some() { return Err(FError::state("HKDF context already set")); }
@@ -46,7 +46,7 @@ impl HkdfExpand384 {
         vm.mark_public(info_ref).map_err(FError::vm)?;
         vm.assign(info_ref, info).map_err(FError::vm)?;
         vm.commit(info_ref).map_err(FError::vm)?;
-        let mut inner = ipad_partial(vm, secret).map_err(|e| e)?;
+        let mut inner = ipad_partial(vm, self.secret).map_err(|e| e)?;
         inner.update(&info_ref);
         inner.compress(vm).map_err(FError::vm)?;
         let inner_local = inner.finalize(vm).map_err(FError::vm)?;
@@ -81,7 +81,7 @@ mod tests {
             vm.assign(secret_ref, secret.to_vec()).unwrap();
             vm.commit(secret_ref).unwrap();
             let mut expand = HkdfExpand384::alloc(vm, secret_ref, b"c ap traffic", 48).unwrap();
-            expand.set_context(vm, secret_ref, &context).unwrap();
+            expand.set_context(vm, &context).unwrap();
             vm.decode(expand.output().unwrap()).unwrap()
         };
         let mut leader_out = run(&mut leader);
