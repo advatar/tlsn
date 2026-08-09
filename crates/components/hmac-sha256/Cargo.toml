@@ -21,6 +21,7 @@ mpz-circuits = { workspace = true }
 mpz-circuits-core = { workspace = true }
 mpz-hash = { workspace = true }
 hmac = { workspace = true }
+bincode = { workspace = true }
 
 rand = { workspace = true }
 sha2 = { workspace = true, features = ["compress"] }

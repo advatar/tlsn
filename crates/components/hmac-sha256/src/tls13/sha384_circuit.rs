@@ -130,6 +130,12 @@ pub(crate) fn sha384_compress_circuit() -> Circuit {
     b.build().unwrap()
 }
 
+/// Returns the MPZ-compatible SHA-384 compression circuit for build-time
+/// serialization into circuit data.
+pub fn sha384_compress_circuit_for_generation() -> Circuit {
+    sha384_compress_circuit()
+}
+
 #[cfg(test)]
 mod tests {
     use super::sha384_compress_circuit;
