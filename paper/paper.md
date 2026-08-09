@@ -92,6 +92,13 @@ The evaluated profile is TLS 1.3 with
 and no 0-RTT, resumption, or `KeyUpdate` claim. Denial of service and side
 channels are outside the initial theorem boundary.
 
+The suite restriction is a deliberate fail-closed capability boundary. The
+implementation rejects other TLS 1.3 suites before key installation because
+the pinned MPC hash stack currently exposes SHA-256 but not SHA-384. The
+generalization plan, including the required 48-byte transcript/HKDF path and a
+separate ChaCha20-Poly1305 circuit milestone, is documented in
+`docs/research/tls13-cipher-suite-generalization.md`.
+
 The prover occupies several adversarial roles simultaneously:
 
 | Role | Status | Protected property |
