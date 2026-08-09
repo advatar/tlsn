@@ -239,8 +239,12 @@ fn validate_notary_url(value: &str) -> Result<Url, String> {
 
 fn websocket_endpoint(base: &Url, path: &str) -> Result<Url, String> {
     let mut url = base.join(path).map_err(|e| e.to_string())?;
-    url.set_scheme(if base.scheme() == "https" { "wss" } else { "ws" })
-        .map_err(|_| "invalid websocket scheme".to_string())?;
+    url.set_scheme(if base.scheme() == "https" {
+        "wss"
+    } else {
+        "ws"
+    })
+    .map_err(|_| "invalid websocket scheme".to_string())?;
     Ok(url)
 }
 
