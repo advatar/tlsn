@@ -107,6 +107,11 @@ and 12-byte IV views from SHA-384 traffic secrets; its two-party outputs are
 checked against the clear TLS 1.3 reference. Finished-state integration and
 record-layer wiring are still open.
 
+Secret-shared SHA-384 Finished MAC computation is covered by a two-party
+reference test. The Tamarin AES-256/SHA-384 model checks its symbolic ordering
+and transcript-binding analogue; a Rust-to-model refinement proof remains
+open.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.
