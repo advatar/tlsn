@@ -10,7 +10,7 @@
 - [ ] Prove concrete TLS 1.3 HKDF/parser refinement against the Rust implementation.
 - [x] Document the fail-closed TLS 1.3 cipher-suite capability boundary and AES-256/ChaCha20 generalization plan.
 - [x] Add a clear SHA-384 HKDF/HkdfLabel reference oracle for future MPC equivalence tests.
-- [ ] Integrate the SHA-384 compression circuit into secret-shared HMAC/HKDF.
+- [x] Integrate the serialized MPZ-compatible SHA-384 compression circuit into secret-shared HMAC/HKDF.
 - [x] Add the SHA-384 streaming VM hasher and HMAC-SHA384 padded-key partial/HMAC scaffolding.
 - [x] Execute two-party HMAC-SHA384 against a cleartext SHA-384 reference vector.
 - [x] Execute two-party TLS 1.3 SHA-384 HKDF-Expand-Label against the reference oracle.
