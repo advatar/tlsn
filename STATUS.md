@@ -16,6 +16,7 @@
 - [x] Execute two-party TLS 1.3 SHA-384 HKDF-Expand-Label against the reference oracle.
 - [x] Implement secret-shared SHA-384 HKDF-Extract over single and hybrid IKM vectors, with reference equivalence coverage.
 - [x] Integrate SHA-384 HKDF-Extract and Expand-Label into a secret-shared handshake-traffic derivation path, with two-party reference equivalence.
+- [x] Derive secret-shared SHA-384 application traffic secrets and typed 32-byte AES-256 keys/12-byte IV views, with reference equivalence.
 - [ ] Integrate SHA-384 HKDF into a full TLS 1.3 key-schedule state machine with 48-byte Finished/transcript state.
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.

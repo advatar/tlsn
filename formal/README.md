@@ -102,6 +102,11 @@ primitive accepting multiple IKM vectors (needed for hybrid key exchange),
 with equivalence coverage against the clear HMAC-SHA384 reference. Full
 SHA-384 TLS 1.3 application-key and Finished-state integration remains open.
 
+The application derivation path now produces typed secret-shared 32-byte key
+and 12-byte IV views from SHA-384 traffic secrets; its two-party outputs are
+checked against the clear TLS 1.3 reference. Finished-state integration and
+record-layer wiring are still open.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

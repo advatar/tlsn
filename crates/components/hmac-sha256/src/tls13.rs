@@ -36,6 +36,8 @@ mod hkdf384;
 mod hkdf_extract384;
 #[allow(dead_code)]
 mod sha384_handshake;
+#[allow(dead_code)]
+mod sha384_application;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]

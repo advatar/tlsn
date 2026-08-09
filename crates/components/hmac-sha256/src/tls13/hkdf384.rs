@@ -58,6 +58,17 @@ impl HkdfExpand384 {
     pub(crate) fn output(&self) -> Result<Array<U8, 48>, FError> {
         self.output.ok_or_else(|| FError::state("HKDF output is not ready"))
     }
+
+    pub(crate) fn output_view<const N: usize>(&self) -> Result<Array<U8, N>, FError> {
+        if N > 48 { return Err(FError::state("HKDF output view exceeds SHA-384 output")); }
+        let output: Vector<U8> = self.output
+            .ok_or_else(|| FError::state("HKDF output is not ready"))?
+            .into();
+        output.get(0..N)
+            .ok_or_else(|| FError::state("invalid HKDF output view"))?
+            .try_into()
+            .map_err(|_| FError::state("invalid HKDF output view"))
+    }
 }
 
 #[cfg(test)]
