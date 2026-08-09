@@ -36,7 +36,8 @@
 - [x] Extend Tamarin/Lean/Kani artifacts with a suite-specific AES-256/SHA-384 symbolic key-schedule boundary.
 - [ ] Extend Lean/Kani artifacts for AES-256 epochs and suite negotiation, and connect the circuit to the concrete state machine.
 - [ ] Re-run adversarial tests and interoperability after enabling any additional TLS 1.3 suite.
-- [ ] Resolve AES-256 MPC evaluator stack overflow observed in nginx ECDSA interoperability before re-enabling negotiation.
+- [x] Replace the AES-256 S-box with the shallow Boyar--Peralta circuit and split key expansion from block encryption; circuit/table and NIST-vector tests pass.
+- [ ] Preallocate the SHA-384 live key schedule before VM setup; genuinely advertising AES-256 currently stalls while processing the 48-byte ServerHello transcript hash.
 - [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
 - [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.

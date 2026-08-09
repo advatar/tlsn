@@ -164,9 +164,10 @@ where
 
     let mut response = Vec::with_capacity(1024);
     tls_connection.read_to_end(&mut response).await.unwrap();
-    assert!(!response.is_empty());
-
+    // Surface handshake/record-layer errors before checking the application
+    // response, rather than reporting only an opaque empty response.
     let mut prover = prover_task.await.unwrap().unwrap();
+    assert!(!response.is_empty());
     assert_eq!(*prover.tls_transcript().version(), TlsVersion::V1_3);
 
     let sent_tx_len = prover.transcript().sent().len();

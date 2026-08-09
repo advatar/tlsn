@@ -11,6 +11,23 @@ pub static AES256_ENCRYPT: LazyLock<Arc<Circuit>> = LazyLock::new(|| {
     )
 });
 
+/// Serialized AES-256 key-schedule circuit.
+pub static AES256_KS: LazyLock<Arc<Circuit>> = LazyLock::new(|| {
+    Arc::new(
+        bincode::deserialize(include_bytes!("../../data/aes256_ks.bin"))
+            .expect("embedded AES-256 key-schedule circuit data must be valid"),
+    )
+});
+
+/// Serialized AES-256 encryption circuit over an expanded key schedule.
+pub static AES256_POST_KS: LazyLock<Arc<Circuit>> = LazyLock::new(|| {
+    Arc::new(
+        bincode::deserialize(include_bytes!("../../data/aes256_post_ks.bin"))
+            .expect("embedded AES-256 post-key-schedule circuit data must be valid"),
+    )
+});
+
+#[cfg(test)]
 const SBOX: [u8; 256] = [
     0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
     0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
@@ -36,7 +53,7 @@ fn xor(b: &mut CircuitBuilder, x: Byte, y: Byte) -> Byte {
     std::array::from_fn(|i| b.add_xor_gate(x[i], y[i]))
 }
 
-fn sbox_boyar(b: &mut CircuitBuilder, x: Byte) -> Byte {
+fn sbox(b: &mut CircuitBuilder, x: Byte) -> Byte {
     // Boyar--Peralta AES S-box circuit (113 gates), with the bit order
     // adapted from the bitsliced AES implementation in RustCrypto.
     macro_rules! q {
@@ -49,7 +66,7 @@ fn sbox_boyar(b: &mut CircuitBuilder, x: Byte) -> Byte {
             b.add_and_gate($a, $c)
         };
     }
-    let (u7, u6, u5, u4, u3, u2, u1, u0) = (x[7], x[6], x[5], x[4], x[3], x[2], x[1], x[0]);
+    let (u7, u6, u5, u4, u3, u2, u1, u0) = (x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
     let y14 = q!(u3, u5);
     let y13 = q!(u0, u6);
     let y12 = q!(y13, y14);
@@ -170,40 +187,6 @@ fn sbox_boyar(b: &mut CircuitBuilder, x: Byte) -> Byte {
     out
 }
 
-fn gf_mul(b: &mut CircuitBuilder, a: Byte, c: Byte) -> Byte {
-    let z = b.get_const_zero();
-    let mut result = [z; 8];
-    let mut value = a;
-    for bit in 0..8 {
-        let masked = value.map(|v| b.add_and_gate(v, c[bit]));
-        result = result.map(|r| r);
-        for i in 0..8 { result[i] = b.add_xor_gate(result[i], masked[i]); }
-        value = xtime(b, value);
-    }
-    result
-}
-
-fn sbox(b: &mut CircuitBuilder, x: Byte) -> Byte {
-    // Multiplicative inverse in GF(2^8), followed by the AES affine map.
-    let one = std::array::from_fn(|i| if i == 0 { b.get_const_one() } else { b.get_const_zero() });
-    let mut result = one;
-    let mut base = x;
-    // x^254, exponent bits are 0b11111110 (LSB first).
-    for bit in 0..8 {
-        if bit != 0 { result = gf_mul(b, result, base); }
-        base = gf_mul(b, base, base);
-    }
-    let mut out = result;
-    for shift in 1..5 {
-        let rotated: Byte = std::array::from_fn(|i| result[(i + 8 - shift) % 8]);
-        for i in 0..8 { out[i] = b.add_xor_gate(out[i], rotated[i]); }
-    }
-    for (i, bit) in [1u8,1,0,0,0,1,1,0].into_iter().enumerate() {
-        if bit == 1 { out[i] = b.add_xor_gate(out[i], b.get_const_one()); }
-    }
-    out
-}
-
 fn xtime(b: &mut CircuitBuilder, x: Byte) -> Byte {
     let z = b.get_const_zero();
     let mut out = [z; 8];
@@ -236,14 +219,7 @@ fn mix_column(b: &mut CircuitBuilder, c: [Byte; 4]) -> [Byte; 4] {
     ]
 }
 
-/// Builds `fn(key: [u8; 32], iv: [u8; 4], nonce: [u8; 8], counter: [u8; 4], block: [u8; 16]) -> [u8; 16]`.
-pub fn aes256_encrypt_circuit() -> Circuit {
-    let mut b = CircuitBuilder::new();
-    let key: [Byte; 32] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
-    let _iv: [Byte; 4] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
-    let _nonce: [Byte; 8] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
-    let _counter: [Byte; 4] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
-    let input: [Byte; 16] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+fn expand_key(b: &mut CircuitBuilder, key: [Byte; 32]) -> Vec<[Byte; 4]> {
     let mut words: Vec<[Byte; 4]> = (0..8)
         .map(|i| [key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]])
         .collect();
@@ -251,45 +227,96 @@ pub fn aes256_encrypt_circuit() -> Circuit {
     for i in 8..60 {
         let mut t = words[i - 1];
         if i % 8 == 0 {
-            t = [
-                sbox(&mut b, t[1]),
-                sbox(&mut b, t[2]),
-                sbox(&mut b, t[3]),
-                sbox(&mut b, t[0]),
-            ];
+            t = [sbox(b, t[1]), sbox(b, t[2]), sbox(b, t[3]), sbox(b, t[0])];
             let mut constant = [b.get_const_zero(); 8];
             for j in 0..8 {
                 if (rc >> j) & 1 == 1 {
                     constant[j] = b.get_const_one();
                 }
             }
-            t[0] = xor(&mut b, t[0], constant);
+            t[0] = xor(b, t[0], constant);
             rc = xtime_byte(rc);
         } else if i % 8 == 4 {
-            t = t.map(|x| sbox(&mut b, x));
+            t = t.map(|x| sbox(b, x));
         }
-        words.push(std::array::from_fn(|j| xor(&mut b, words[i - 8][j], t[j])));
+        words.push(std::array::from_fn(|j| xor(b, words[i - 8][j], t[j])));
     }
+
+    words
+}
+
+fn encrypt_with_schedule(
+    b: &mut CircuitBuilder,
+    words: &[[Byte; 4]],
+    input: [Byte; 16],
+) -> [Byte; 16] {
     let mut state = input;
     for i in 0..16 {
-        state[i] = xor(&mut b, state[i], words[i / 4][i % 4]);
+        state[i] = xor(b, state[i], words[i / 4][i % 4]);
     }
     for round in 1..14 {
-        state = state.map(|x| sbox(&mut b, x));
+        state = state.map(|x| sbox(b, x));
         state = shift_rows(state);
         for col in 0..4 {
-            let mixed = mix_column(&mut b, state[4 * col..4 * col + 4].try_into().unwrap());
+            let mixed = mix_column(b, state[4 * col..4 * col + 4].try_into().unwrap());
             state[4 * col..4 * col + 4].clone_from_slice(&mixed);
         }
         for i in 0..16 {
-            state[i] = xor(&mut b, state[i], words[4 * round + i / 4][i % 4]);
+            state[i] = xor(b, state[i], words[4 * round + i / 4][i % 4]);
         }
     }
-    state = state.map(|x| sbox(&mut b, x));
+    state = state.map(|x| sbox(b, x));
     state = shift_rows(state);
     for i in 0..16 {
-        state[i] = xor(&mut b, state[i], words[56 + i / 4][i % 4]);
+        state[i] = xor(b, state[i], words[56 + i / 4][i % 4]);
     }
+
+    state
+}
+
+/// Builds `fn(key: [u8; 32], iv: [u8; 4], nonce: [u8; 8], counter: [u8; 4],
+/// block: [u8; 16]) -> [u8; 16]`.
+pub fn aes256_encrypt_circuit() -> Circuit {
+    let mut b = CircuitBuilder::new();
+    let key: [Byte; 32] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let _iv: [Byte; 4] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let _nonce: [Byte; 8] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let _counter: [Byte; 4] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let input: [Byte; 16] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let words = expand_key(&mut b, key);
+    let state = encrypt_with_schedule(&mut b, &words, input);
+    for byte in state {
+        for bit in byte {
+            b.add_output(bit);
+        }
+    }
+    b.build().unwrap()
+}
+
+/// Builds `fn(key: [u8; 32]) -> [u8; 240]`.
+pub fn aes256_key_schedule_circuit() -> Circuit {
+    let mut b = CircuitBuilder::new();
+    let key: [Byte; 32] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let words = expand_key(&mut b, key);
+    for word in words {
+        for byte in word {
+            for bit in byte {
+                let output = b.add_id_gate(bit);
+                b.add_output(output);
+            }
+        }
+    }
+    b.build().unwrap()
+}
+
+/// Builds `fn(schedule: [u8; 240], input: [u8; 16]) -> [u8; 16]`.
+pub fn aes256_post_key_schedule_circuit() -> Circuit {
+    let mut b = CircuitBuilder::new();
+    let words: Vec<[Byte; 4]> = (0..60)
+        .map(|_| std::array::from_fn(|_| std::array::from_fn(|_| b.add_input())))
+        .collect();
+    let input: [Byte; 16] = std::array::from_fn(|_| std::array::from_fn(|_| b.add_input()));
+    let state = encrypt_with_schedule(&mut b, &words, input);
     for byte in state {
         for bit in byte {
             b.add_output(bit);
@@ -318,7 +345,10 @@ fn xtime_byte(x: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{aes256_encrypt_circuit, sbox, AES256_ENCRYPT, SBOX};
+    use super::{
+        aes256_encrypt_circuit, aes256_key_schedule_circuit, aes256_post_key_schedule_circuit,
+        sbox, AES256_ENCRYPT, AES256_KS, AES256_POST_KS, SBOX,
+    };
     use aes::cipher::{BlockEncrypt, KeyInit};
     use mpz_circuits_core::evaluate;
 
@@ -346,6 +376,17 @@ mod tests {
 
         let embedded: [u8; 16] = evaluate!(AES256_ENCRYPT, key, iv, nonce, counter, block).unwrap();
         assert_eq!(embedded, expected);
+
+        let dynamic_schedule: [u8; 240] = evaluate!(aes256_key_schedule_circuit(), key).unwrap();
+        assert_eq!(&dynamic_schedule[..32], &key);
+        let dynamic_split: [u8; 16] =
+            evaluate!(aes256_post_key_schedule_circuit(), dynamic_schedule, block).unwrap();
+        assert_eq!(dynamic_split, expected);
+
+        let schedule: [u8; 240] = evaluate!(AES256_KS, key).unwrap();
+        assert_eq!(&schedule[..32], &key);
+        let split: [u8; 16] = evaluate!(AES256_POST_KS, schedule, block).unwrap();
+        assert_eq!(split, expected);
     }
 
     #[test]
