@@ -12,10 +12,10 @@ abstract: |
   secret-shared and server plaintext is released through a capsule gated by a
   jointly computed GCM tag. We separate assurance into symbolic protocol
   analysis, computational assumptions, machine-checked state invariants, and
-  empirical validation. Tamarin models prove five record-layer properties,
-  five handshake/transcript properties, five key-schedule/Finished properties,
-  and a bounded selective-disclosure observational-equivalence property under
-  explicit abstractions.
+  empirical validation. Tamarin establishes symbolic key secrecy,
+  authenticated plaintext release, record-slot uniqueness,
+  handshake/transcript agreement, Finished-before-application-secret
+  installation, and bounded selective-disclosure equivalence.
   The record-layer properties are proved under ideal AEAD and MPC assumptions.
   Lean proves sequence and
   nonce invariants, and Kani checks the corresponding Rust functions over all
@@ -92,6 +92,17 @@ The evaluated profile is TLS 1.3 with
 and no 0-RTT, resumption, or `KeyUpdate` claim. Denial of service and side
 channels are outside the initial theorem boundary.
 
+The prover occupies several adversarial roles simultaneously:
+
+| Role | Status | Protected property |
+| --- | --- | --- |
+| Network scheduler | Malicious | Record and transcript integrity |
+| TLS client | Malicious | Server provenance |
+| MPC leader/prover | Malicious | Key secrecy and authenticated release |
+| Presenter | Malicious | Disclosure integrity |
+| Verifier | Honest in the initial theorem | Confidentiality is future work |
+| TLS server | Honest with respect to its authentication key | Certificate-bound server identity |
+
 The assurance boundary is intentionally explicit:
 
 | Component | Status in the stated claims |
@@ -119,6 +130,12 @@ only the authentic candidate opens and validates the capsule under the stated
 PRF and share-uniformity assumptions. The detailed game sequence and proposed
 hardening are maintained in the accompanying computational-proof artifact.
 
+Every record is identified conceptually by
+`RecordId = (session_id, direction, generation, sequence)`. The current local
+epoch proofs establish uniqueness of the directional generation/sequence pair;
+binding this identifier through MPC allocation, release derivation,
+commitments, and presentation is an explicit refinement obligation.
+
 # Formal analysis
 
 ## Symbolic model
@@ -136,11 +153,25 @@ share. Five required lemmas close automatically:
 | Nonce tuple uniqueness | Verified | Modeled read-slot state |
 | Read-slot single use | Verified | One verification attempt per slot |
 
+### Finding 1 — Authenticated release does not imply submitted-tag agreement
+
 The original stronger tag-agreement lemma was falsified. A prover retaining a
 genuine tag for a genuine ciphertext can use it to open a capsule after
 submitting another tag. The final theorem therefore establishes that released
 plaintext corresponds to a server-authenticated ciphertext under some valid
 tag, not equality with the submitted tag.
+
+The attack trace is:
+
+```text
+server emits (C, T_valid)
+prover submits (C, T_fake) but retains T_valid
+capsule opens under T_valid
+plaintext is authentic, but T_submitted ≠ T_valid
+```
+
+This is a positive formal-methods result: verification found and invalidated an
+intuitively stronger claim before publication.
 
 A second Tamarin model covers the symbolic handshake/transcript boundary. It
 closes five additional lemmas for handshake executability and agreement,
@@ -163,6 +194,26 @@ A fourth, deliberately minimal, diff model checks that changing unrevealed
 bytes while keeping the public projection fixed is observationally invisible.
 This is a boundary test for the disclosure interface, not a proof of the
 production circuit or serialization format.
+
+## Open composition theorem
+
+The intended end-to-end theorem is:
+
+```text
+HandshakeAgreement
+∧ FinishedAcceptance
+∧ ApplicationSecretInstallation
+∧ EpochBinding
+∧ RecordAuthentication
+∧ DisclosureBinding
+⇒ PresentedByteHasTLSServerProvenance
+```
+
+Its status is **OPEN**. The current theories prove the premises in separate
+abstract boundaries, but no theorem yet composes them with the concrete Rust
+parser, HKDF, MPC circuits, and proof serialization. Stating this theorem
+explicitly prevents the collection of local proofs from being mistaken for a
+whole-implementation result.
 
 ## State and implementation invariants
 
@@ -218,10 +269,10 @@ fixture and core validation are run by `./formal/validate.sh`.
 | Claim | Evidence now | Missing evidence |
 |---|---|---|
 | Keys are not intentionally decoded | Code audit; symbolic secrecy | Whole-program information-flow/refinement proof |
-| Released plaintext has server provenance | Tamarin theorem | Computational MPC composition; handshake binding |
+| Authenticated release implies modeled server provenance | Tamarin theorem | Computational MPC composition; concrete handshake binding |
 | Epoch sequences do not wrap or repeat locally | Lean and Kani | Concurrent whole-program refinement |
 | Fixed-IV nonce derivation is injective | Lean and Kani | Circuit/reference equivalence |
-| Full proof transcript is authentic | Tamarin handshake/transcript model plus end-to-end tests | Concrete HKDF/parser refinement |
+| Full proof transcript is authentic | Tamarin handshake/transcript model plus end-to-end tests | Concrete HKDF/parser refinement and end-to-end composition |
 | Selective disclosure preserves the public projection | Minimal Tamarin observational-equivalence model | Production leakage function and serialization refinement |
 
 The interoperation result is evidence of compatibility, not a security proof;
@@ -237,6 +288,12 @@ production transcript commitments, proof serialization, malicious verifier, side
 concurrency, or crashes. AES and GHASH circuit equivalence is tested but not
 machine-proved. The tag-share capsule is nonstandard and should preferably be
 replaced by an explicitly context-bound release key derived inside MPC.
+
+Cross-session non-transferability is also open: a release artifact from one
+handshake must not open under another session, even when the server, plaintext,
+cipher suite, and sequence number are identical. The planned release context
+therefore includes a transcript-derived session identity together with
+direction, generation, sequence, AAD, and ciphertext digest.
 
 Accordingly, the correct current claim is a machine-checked symbolic
 record-layer model plus locally verified state invariants—not a formally

@@ -8,6 +8,8 @@
 - [x] Extend the symbolic model through certificate/handshake authentication, transcript agreement, and commitment-based presentation acceptance.
 - [x] Add a symbolic TLS 1.3 HKDF/Finished/application-secret boundary model.
 - [ ] Prove concrete TLS 1.3 HKDF/parser refinement against the Rust implementation.
+- [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
+- [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.
 - [x] Specify a review-ready computational proof target for the authenticated-release capsule and identify required construction hardening.
 - [x] Add Lean specifications and Kani implementation checks for typed epochs, sequence ownership, exhaustion, and nonce derivation.
