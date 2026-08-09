@@ -1,0 +1,19 @@
+[package]
+name = "tlsn-tls13-reference"
+version = "0.1.0-alpha.15-pre"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Single-party TLS 1.3 reference key schedule and record layer, used as a test oracle for the MPC implementation"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+aes-gcm = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }

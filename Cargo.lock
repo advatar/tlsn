@@ -8516,6 +8516,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tlsn-tls13-reference"
+version = "0.1.0-alpha.15-pre"
+dependencies = [
+ "aes-gcm",
+ "hex",
+ "hmac",
+ "sha2",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "tlsn-wasm"
 version = "0.1.0-alpha.15-pre"
 dependencies = [
