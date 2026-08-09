@@ -37,7 +37,7 @@ mod hkdf_extract384;
 #[allow(dead_code)]
 mod sha384_handshake;
 #[allow(dead_code)]
-mod sha384_application;
+pub(crate) mod sha384_application;
 #[allow(dead_code)]
 mod sha384_finished;
 

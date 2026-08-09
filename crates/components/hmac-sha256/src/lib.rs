@@ -24,6 +24,7 @@ mod tls13;
 pub use tls12::Tls12Prf as MpcPrf;
 pub use tls12::{PrfOutput, SessionKeys, Tls12Prf};
 pub use tls13::{ApplicationKeys, HandshakeKeys, Role, Tls13KeySched};
+pub use tls13::sha384_application::Sha384ApplicationKeys;
 
 fn sha256(mut state: [u32; 8], pos: usize, msg: &[u8]) -> [u32; 8] {
     use sha2::{

@@ -4,8 +4,9 @@ use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, Vm};
 use crate::FError;
 use super::hkdf384::HkdfExpand384;
 
+/// Secret-shared TLS 1.3 application key material for SHA-384 suites.
 #[derive(Debug)]
-pub(crate) struct Sha384ApplicationKeys {
+pub struct Sha384ApplicationKeys {
     client_secret: HkdfExpand384,
     server_secret: HkdfExpand384,
     client_key: HkdfExpand384,
@@ -15,7 +16,8 @@ pub(crate) struct Sha384ApplicationKeys {
 }
 
 impl Sha384ApplicationKeys {
-    pub(crate) fn alloc(
+    /// Allocates application traffic secrets and typed AES-256 key/IV views.
+    pub fn alloc(
         vm: &mut dyn Vm<Binary>,
         master_secret: Vector<U8>,
         transcript_hash: &[u8; 48],
@@ -33,7 +35,8 @@ impl Sha384ApplicationKeys {
         Ok(Self { client_secret, server_secret, client_key, client_iv, server_key, server_iv })
     }
 
-    pub(crate) fn set_context(&mut self, vm: &mut dyn Vm<Binary>) -> Result<(), FError> {
+    /// Completes allocation of the key and IV expansions in the VM.
+    pub fn set_context(&mut self, vm: &mut dyn Vm<Binary>) -> Result<(), FError> {
         self.client_key.set_context(vm, &[])?;
         self.client_iv.set_context(vm, &[])?;
         self.server_key.set_context(vm, &[])?;
@@ -41,10 +44,14 @@ impl Sha384ApplicationKeys {
         Ok(())
     }
 
-    pub(crate) fn client_key(&self) -> Result<Array<U8, 32>, FError> { self.client_key.output_view() }
-    pub(crate) fn client_iv(&self) -> Result<Array<U8, 12>, FError> { self.client_iv.output_view() }
-    pub(crate) fn server_key(&self) -> Result<Array<U8, 32>, FError> { self.server_key.output_view() }
-    pub(crate) fn server_iv(&self) -> Result<Array<U8, 12>, FError> { self.server_iv.output_view() }
+    /// Returns the secret-shared client write key view.
+    pub fn client_key(&self) -> Result<Array<U8, 32>, FError> { self.client_key.output_view() }
+    /// Returns the secret-shared client write IV view.
+    pub fn client_iv(&self) -> Result<Array<U8, 12>, FError> { self.client_iv.output_view() }
+    /// Returns the secret-shared server write key view.
+    pub fn server_key(&self) -> Result<Array<U8, 32>, FError> { self.server_key.output_view() }
+    /// Returns the secret-shared server write IV view.
+    pub fn server_iv(&self) -> Result<Array<U8, 12>, FError> { self.server_iv.output_view() }
 }
 
 #[cfg(test)]
