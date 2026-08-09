@@ -105,13 +105,13 @@ pub(crate) struct Tls13CertVerify {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13ClientFinishedVd {
-    pub(crate) handshake_hash: [u8; 32],
-    pub(crate) verify_data: [u8; 32],
+    pub(crate) handshake_hash: Vec<u8>,
+    pub(crate) verify_data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13ServerFinishedVd {
-    pub(crate) verify_data: [u8; 32],
+    pub(crate) verify_data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -166,3 +166,8 @@ it does not establish whole-program refinement or concurrency properties.
 The inter-party handshake-hash transport now carries length-delimited bytes,
 so it can represent SHA-384 transcripts; the legacy receiver still rejects
 non-32-byte hashes until suite dispatch is enabled.
+
+Finished verify-data messages are likewise length-delimited, and leader
+dispatch now routes 48-byte transcript hashes to the SHA-384 MPC callback;
+negotiation remains disabled until the preceding SHA-384 key installation is
+selected by the handshake.

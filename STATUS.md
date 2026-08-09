@@ -28,6 +28,7 @@
 - [x] Export VM-native SHA-384 Finished computation from retained secret-shared keys.
 - [x] Wire SHA-384 Finished computation through MPC-TLS state and verify public 48-byte output jointly.
 - [x] Generalize the inter-party TLS 1.3 handshake-hash message to length-delimited bytes, retaining strict SHA-256 validation until SHA-384 dispatch is enabled.
+- [x] Generalize TLS 1.3 Finished inter-party payloads and add 48-byte leader dispatch to the retained SHA-384 MPC callback.
 - [ ] Integrate SHA-384 HKDF into a full TLS 1.3 key-schedule state machine with 48-byte Finished/transcript state.
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.

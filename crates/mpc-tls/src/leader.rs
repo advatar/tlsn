@@ -904,6 +904,36 @@ impl Backend for MpcTlsLeader {
 
     #[instrument(level = "debug", skip_all, err)]
     async fn get_server_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError> {
+        if hash.len() == 48 {
+            let hash: [u8; 48] = hash.try_into().expect("checked SHA-384 hash length");
+            match &mut self.state {
+                State::Handshake {
+                    ctx,
+                    vm,
+                    tls13,
+                    sf_vd,
+                    protocol_version: Some(ProtocolVersion::TLSv1_3),
+                    ..
+                } => {
+                    let mut vm = vm
+                        .try_lock()
+                        .map_err(|_| MpcTlsError::other("VM lock is held"))?;
+                    let vd = tls13
+                        .sha384_finished_vd(ctx, &mut *vm, hash, true)
+                        .await
+                        .map_err(MpcTlsError::hs)?;
+                    *sf_vd = Some(vd.to_vec());
+                    ctx.io_mut()
+                        .send(Message::Tls13ServerFinishedVd(Tls13ServerFinishedVd {
+                            verify_data: vd.to_vec(),
+                        }))
+                        .await
+                        .map_err(MpcTlsError::from)?;
+                    return Ok(vd.to_vec());
+                }
+                _ => return Err(MpcTlsError::state("must be in a tls13 handshake for SHA-384 Finished").into()),
+            }
+        }
         let hash: [u8; 32] = hash
             .try_into()
             .map_err(|_| MpcTlsError::hs("server finished handshake hash is not 32 bytes"))?;
@@ -921,7 +951,7 @@ impl Backend for MpcTlsLeader {
                 *sf_vd = Some(vd.to_vec());
                 ctx.io_mut()
                     .send(Message::Tls13ServerFinishedVd(Tls13ServerFinishedVd {
-                        verify_data: vd,
+                        verify_data: vd.to_vec(),
                     }))
                     .await
                     .map_err(MpcTlsError::from)?;
@@ -972,6 +1002,37 @@ impl Backend for MpcTlsLeader {
 
     #[instrument(level = "debug", skip_all, err)]
     async fn get_client_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError> {
+        if hash.len() == 48 {
+            let hash: [u8; 48] = hash.try_into().expect("checked SHA-384 hash length");
+            match &mut self.state {
+                State::Handshake {
+                    ctx,
+                    vm,
+                    tls13,
+                    cf_vd,
+                    protocol_version: Some(ProtocolVersion::TLSv1_3),
+                    ..
+                } => {
+                    let mut vm = vm
+                        .try_lock()
+                        .map_err(|_| MpcTlsError::other("VM lock is held"))?;
+                    let vd = tls13
+                        .sha384_finished_vd(ctx, &mut *vm, hash, false)
+                        .await
+                        .map_err(MpcTlsError::hs)?;
+                    *cf_vd = Some(vd.to_vec());
+                    ctx.io_mut()
+                        .send(Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
+                            handshake_hash: hash.to_vec(),
+                            verify_data: vd.to_vec(),
+                        }))
+                        .await
+                        .map_err(MpcTlsError::from)?;
+                    return Ok(vd.to_vec());
+                }
+                _ => return Err(MpcTlsError::state("must be in a tls13 handshake for SHA-384 Finished").into()),
+            }
+        }
         let hash: [u8; 32] = hash
             .try_into()
             .map_err(|_| MpcTlsError::hs("client finished handshake hash is not 32 bytes"))?;
@@ -989,8 +1050,8 @@ impl Backend for MpcTlsLeader {
                 *cf_vd = Some(vd.to_vec());
                 ctx.io_mut()
                     .send(Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
-                        handshake_hash: hash,
-                        verify_data: vd,
+                        handshake_hash: hash.to_vec(),
+                        verify_data: vd.to_vec(),
                     }))
                     .await
                     .map_err(MpcTlsError::from)?;
