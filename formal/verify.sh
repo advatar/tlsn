@@ -6,7 +6,8 @@ proof_output="$(mktemp /tmp/tlsn-tamarin-proof.XXXXXX)"
 handshake_proof_output="$(mktemp /tmp/tlsn-tamarin-handshake-proof.XXXXXX)"
 selective_proof_output="$(mktemp /tmp/tlsn-tamarin-selective-proof.XXXXXX)"
 schedule_proof_output="$(mktemp /tmp/tlsn-tamarin-schedule-proof.XXXXXX)"
-trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output" "$schedule_proof_output"' EXIT
+aes256_proof_output="$(mktemp /tmp/tlsn-tamarin-aes256-proof.XXXXXX)"
+trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output" "$schedule_proof_output" "$aes256_proof_output"' EXIT
 
 lean formal/lean/Tls13Epoch.lean
 lean formal/lean/Tls13HkdfLabel.lean
@@ -87,3 +88,23 @@ done
 
 printf 'verified %d TLS 1.3 key-schedule/Finished lemmas\n' \
   "${#schedule_lemmas[@]}"
+
+tamarin-prover --prove --quiet \
+  formal/tamarin/tls13_aes256_sha384.spthy \
+  | tee "$aes256_proof_output"
+
+aes256_lemmas=(
+  finished_acceptance_requires_sha384_emission
+  aes256_installation_requires_finished
+  aes256_application_context_is_sha384_bound
+)
+
+for lemma in "${aes256_lemmas[@]}"; do
+  if ! grep -Eq "^[[:space:]]+${lemma} .*: verified" "$aes256_proof_output"; then
+    printf 'required AES-256/SHA-384 Tamarin lemma was not verified: %s\n' "$lemma" >&2
+    exit 1
+  fi
+done
+
+printf 'verified %d TLS_AES_256_GCM_SHA384 symbolic lemmas\n' \
+  "${#aes256_lemmas[@]}"

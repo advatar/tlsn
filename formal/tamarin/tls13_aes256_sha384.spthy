@@ -1,0 +1,77 @@
+theory Tls13Aes256Sha384
+begin
+
+builtins: hashing
+
+functions:
+  hkdf_extract384/2 [private],
+  hkdf_expand_label384/3 [private],
+  finished_key384/1 [private],
+  finished_mac384/2 [private],
+  transcript_hash384/1,
+  aes256_key/1 [private],
+  aes256_iv/1 [private]
+
+restriction Equality:
+  "All x y #i. Eq(x,y) @ #i ==> x = y"
+
+rule DeriveSha384TrafficSecret:
+  let handshake_secret = hkdf_extract384(~derived_secret, ~shared_secret)
+      traffic_secret = hkdf_expand_label384(handshake_secret,
+                                            'c hs traffic',
+                                            transcript_hash384(~transcript))
+  in
+  [ Fr(~shared_secret), Fr(~derived_secret), Fr(~transcript) ]
+  --[ Sha384HandshakeTraffic(~transcript, traffic_secret) ]->
+  [ !Sha384HandshakeSecret(~transcript, handshake_secret),
+    !Sha384TrafficSecret(~transcript, traffic_secret) ]
+
+rule EmitSha384Finished:
+  let verify_data = finished_mac384(finished_key384(traffic_secret),
+                                    transcript_hash384(~transcript))
+  in
+  [ !Sha384TrafficSecret(~transcript, traffic_secret) ]
+  --[ Sha384FinishedEmitted(~transcript, verify_data) ]->
+  [ !Sha384Finished(~transcript, traffic_secret, verify_data),
+    Out(<~transcript, verify_data>) ]
+
+rule AcceptSha384Finished:
+  [ !Sha384Finished(transcript, traffic_secret, verify_data),
+    In(<transcript, verify_data>) ]
+  --[ Eq(verify_data,
+        finished_mac384(finished_key384(traffic_secret),
+                        transcript_hash384(transcript))),
+      Sha384FinishedAccepted(transcript) ]->
+  [ !Sha384FinishedVerified(transcript) ]
+
+rule InstallAes256ApplicationSecret:
+  let application_secret = hkdf_expand_label384(handshake_secret,
+                                                'c ap traffic',
+                                                transcript_hash384(transcript))
+      key = aes256_key(application_secret)
+      iv = aes256_iv(application_secret)
+  in
+  [ !Sha384FinishedVerified(transcript),
+    !Sha384HandshakeSecret(transcript, handshake_secret) ]
+  --[ Aes256ApplicationInstalled(transcript, handshake_secret, application_secret, key, iv) ]->
+  [ !Aes256ApplicationSecret(transcript, application_secret, key, iv) ]
+
+lemma finished_acceptance_requires_sha384_emission:
+  "All transcript #i.
+     Sha384FinishedAccepted(transcript) @ #i
+   ==> (Ex verify_data #j.
+          Sha384FinishedEmitted(transcript, verify_data) @ #j & #j < #i)"
+
+lemma aes256_installation_requires_finished:
+  "All transcript handshake_secret application_secret key iv #i.
+     Aes256ApplicationInstalled(transcript, handshake_secret, application_secret, key, iv) @ #i
+   ==> (Ex #j. Sha384FinishedAccepted(transcript) @ #j & #j < #i)"
+
+lemma aes256_application_context_is_sha384_bound:
+  "All transcript handshake_secret application_secret key iv #i.
+     Aes256ApplicationInstalled(transcript, handshake_secret, application_secret, key, iv) @ #i
+   ==> application_secret =
+         hkdf_expand_label384(handshake_secret, 'c ap traffic',
+                              transcript_hash384(transcript))"
+
+end

@@ -18,7 +18,8 @@
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.
 - [ ] Formally verify SHA-384 circuit/reference equivalence and HMAC/HKDF width/domain invariants.
-- [ ] Extend Tamarin/Lean/Kani artifacts for AES-256 key schedule, Finished state, epochs, and suite negotiation.
+- [x] Extend Tamarin/Lean/Kani artifacts with a suite-specific AES-256/SHA-384 symbolic key-schedule boundary.
+- [ ] Extend Lean/Kani artifacts for AES-256 epochs and suite negotiation, and connect the circuit to the concrete state machine.
 - [ ] Re-run adversarial tests and interoperability after enabling any additional TLS 1.3 suite.
 - [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
 - [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.

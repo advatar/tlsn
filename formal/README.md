@@ -54,6 +54,12 @@ binds Finished verification to the transcript hash, and proves five
 execution/order/context properties. This is not a bit-level proof of the Rust HKDF
 implementation.
 
+`tamarin/tls13_aes256_sha384.spthy` covers the suite-specific SHA-384/AES-256
+boundary: SHA-384 Finished acceptance, the ordering constraint before AES-256
+application-secret installation, and transcript-context binding. These are
+symbolic transition-system properties; they do not enable AES-256 negotiation
+in the production backend or prove the MPZ circuit refines the model.
+
 The reproduction wrapper checks five additional lemmas from this model:
 handshake executability and agreement, application-epoch agreement,
 presentation agreement, and server-identity binding.
