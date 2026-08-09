@@ -26,7 +26,9 @@ SHA-512 state are exposed as the digest state. The circuit must implement all
 The standalone boolean circuit builder and its `sha2::compress512` equivalence
 test now live in
 `crates/components/hmac-sha256/src/tls13/sha384_circuit.rs`. It is not yet
-wired into secret-shared HMAC/HKDF or production negotiation.
+wired into secret-shared HMAC/HKDF or production negotiation. A VM call
+adapter now exists in `tls13/sha384_vm.rs`; it is intentionally kept unused
+until the HMAC state machine and its width invariants are implemented.
 
 ## Verification gates
 
