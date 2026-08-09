@@ -137,6 +137,19 @@ pub struct Tls13HandshakeKeys {
     pub server_finished_key: [u8; 32],
 }
 
+/// TLS 1.3 SHA-384 handshake keys retained in MPC form.
+#[derive(Debug)]
+pub struct Tls13Sha384HandshakeKeys {
+    /// Client-to-server write epoch.
+    pub client: WriteEpoch<Array<U8, 32>, Array<U8, 12>>,
+    /// Client Finished key.
+    pub client_finished_key: Array<U8, 48>,
+    /// Server-to-client read epoch.
+    pub server: ReadEpoch<Array<U8, 32>, Array<U8, 12>>,
+    /// Server Finished key.
+    pub server_finished_key: Array<U8, 48>,
+}
+
 /// TLS 1.3 application traffic keys kept secret-shared.
 #[derive(Debug)]
 pub struct Tls13ApplicationKeys {
@@ -160,6 +173,8 @@ pub struct Tls13Sha384ApplicationKeys {
 pub struct Tls13SessionKeys {
     /// Handshake traffic keys revealed to the leader after `ServerHello`.
     pub handshake: Option<Tls13HandshakeKeys>,
+    /// SHA-384 handshake keys retained in MPC form.
+    pub sha384_handshake: Option<Tls13Sha384HandshakeKeys>,
     /// Application traffic keys retained in MPC form.
     pub application: Option<Tls13ApplicationKeys>,
     /// SHA-384/AES-256 application keys, when that suite is selected.
@@ -276,6 +291,45 @@ impl Tls13KeyState {
             material.server_key().map_err(MpcTlsError::from)?,
             material.server_iv().map_err(MpcTlsError::from)?,
         );
+        Ok(())
+    }
+
+    /// Derives and installs SHA-384 handshake epochs from a secret-shared
+    /// handshake secret without decoding key material.
+    #[allow(dead_code)]
+    pub(crate) async fn set_sha384_handshake_keys(
+        &mut self,
+        ctx: &mut Context,
+        vm: &mut (dyn VmTrait<Binary> + Send),
+        handshake_secret: Array<U8, 48>,
+        transcript_hash: [u8; 48],
+    ) -> Result<(), MpcTlsError> {
+        let mut material = hmac_sha256::Sha384HandshakeKeys::alloc(
+            vm,
+            handshake_secret.into(),
+            &transcript_hash,
+        )
+        .map_err(MpcTlsError::from)?;
+        material.set_context(vm).map_err(MpcTlsError::from)?;
+        mpz_vm_core::Execute::execute_all(vm, ctx)
+            .await
+            .map_err(MpcTlsError::hs)?;
+        self.keys.sha384_handshake = Some(Tls13Sha384HandshakeKeys {
+            client: WriteEpoch::new(
+                Epoch::Handshake,
+                0,
+                material.client_key().map_err(MpcTlsError::from)?,
+                material.client_iv().map_err(MpcTlsError::from)?,
+            ),
+            client_finished_key: material.client_finished().map_err(MpcTlsError::from)?,
+            server: ReadEpoch::new(
+                Epoch::Handshake,
+                0,
+                material.server_key().map_err(MpcTlsError::from)?,
+                material.server_iv().map_err(MpcTlsError::from)?,
+            ),
+            server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
+        });
         Ok(())
     }
 

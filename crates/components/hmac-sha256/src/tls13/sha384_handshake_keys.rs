@@ -6,7 +6,7 @@ use super::hkdf384::HkdfExpand384;
 
 /// SHA-384 handshake traffic keys, IVs, and Finished keys.
 #[derive(Debug)]
-pub(crate) struct Sha384HandshakeKeys {
+pub struct Sha384HandshakeKeys {
     client_key: HkdfExpand384,
     client_iv: HkdfExpand384,
     client_finished: HkdfExpand384,
@@ -17,7 +17,7 @@ pub(crate) struct Sha384HandshakeKeys {
 
 impl Sha384HandshakeKeys {
     /// Allocates handshake material from a secret-shared handshake secret.
-    pub(crate) fn alloc(
+    pub fn alloc(
         vm: &mut dyn Vm<Binary>,
         handshake_secret: Vector<U8>,
         transcript_hash: &[u8; 48],
@@ -36,7 +36,7 @@ impl Sha384HandshakeKeys {
     }
 
     /// Allocates empty contexts for all handshake labels.
-    pub(crate) fn set_context(&mut self, vm: &mut dyn Vm<Binary>) -> Result<(), FError> {
+    pub fn set_context(&mut self, vm: &mut dyn Vm<Binary>) -> Result<(), FError> {
         self.client_key.set_context(vm, &[])?;
         self.client_iv.set_context(vm, &[])?;
         self.client_finished.set_context(vm, &[])?;
@@ -46,12 +46,18 @@ impl Sha384HandshakeKeys {
         Ok(())
     }
 
-    pub(crate) fn client_key(&self) -> Result<Array<U8, 32>, FError> { self.client_key.output_view() }
-    pub(crate) fn client_iv(&self) -> Result<Array<U8, 12>, FError> { self.client_iv.output_view() }
-    pub(crate) fn client_finished(&self) -> Result<Array<U8, 48>, FError> { self.client_finished.output_view() }
-    pub(crate) fn server_key(&self) -> Result<Array<U8, 32>, FError> { self.server_key.output_view() }
-    pub(crate) fn server_iv(&self) -> Result<Array<U8, 12>, FError> { self.server_iv.output_view() }
-    pub(crate) fn server_finished(&self) -> Result<Array<U8, 48>, FError> { self.server_finished.output_view() }
+    /// Returns the client handshake key view.
+    pub fn client_key(&self) -> Result<Array<U8, 32>, FError> { self.client_key.output_view() }
+    /// Returns the client handshake IV view.
+    pub fn client_iv(&self) -> Result<Array<U8, 12>, FError> { self.client_iv.output_view() }
+    /// Returns the client Finished-key view.
+    pub fn client_finished(&self) -> Result<Array<U8, 48>, FError> { self.client_finished.output_view() }
+    /// Returns the server handshake key view.
+    pub fn server_key(&self) -> Result<Array<U8, 32>, FError> { self.server_key.output_view() }
+    /// Returns the server handshake IV view.
+    pub fn server_iv(&self) -> Result<Array<U8, 12>, FError> { self.server_iv.output_view() }
+    /// Returns the server Finished-key view.
+    pub fn server_finished(&self) -> Result<Array<U8, 48>, FError> { self.server_finished.output_view() }
 }
 
 #[cfg(test)]

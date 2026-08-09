@@ -40,8 +40,8 @@ mod sha384_handshake;
 pub(crate) mod sha384_application;
 #[allow(dead_code)]
 mod sha384_finished;
-#[allow(dead_code)]
-mod sha384_handshake_keys;
+pub(crate) mod sha384_handshake_keys;
+pub use sha384_handshake_keys::Sha384HandshakeKeys;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]

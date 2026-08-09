@@ -20,7 +20,7 @@ pub use follower::MpcTlsFollower;
 pub use leader::MpcTlsLeader;
 pub use tls13::{
     Epoch, ReadEpoch, Tls13ApplicationKeys, Tls13HandshakeKeys, Tls13SessionKeys,
-    Tls13Sha384ApplicationKeys, WriteEpoch,
+    Tls13Sha384ApplicationKeys, Tls13Sha384HandshakeKeys, WriteEpoch,
 };
 
 use std::{future::Future, pin::Pin, sync::Arc};
