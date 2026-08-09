@@ -11,6 +11,7 @@
 - [x] Document the fail-closed TLS 1.3 cipher-suite capability boundary and AES-256/ChaCha20 generalization plan.
 - [x] Add a clear SHA-384 HKDF/HkdfLabel reference oracle for future MPC equivalence tests.
 - [ ] Integrate the SHA-384 compression circuit into secret-shared HMAC/HKDF.
+- [x] Add the SHA-384 streaming VM hasher and HMAC-SHA384 padded-key partial/HMAC scaffolding.
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.
 - [ ] Formally verify SHA-384 circuit/reference equivalence and HMAC/HKDF width/domain invariants.

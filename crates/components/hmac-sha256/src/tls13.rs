@@ -28,6 +28,8 @@ mod sha384_circuit;
 mod sha384_vm;
 #[allow(dead_code)]
 mod sha384;
+#[allow(dead_code)]
+mod hmac384;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]
