@@ -9,6 +9,8 @@
 - [x] Add a symbolic TLS 1.3 HKDF/Finished/application-secret boundary model.
 - [ ] Prove concrete TLS 1.3 HKDF/parser refinement against the Rust implementation.
 - [x] Document the fail-closed TLS 1.3 cipher-suite capability boundary and AES-256/ChaCha20 generalization plan.
+- [x] Add a clear SHA-384 HKDF/HkdfLabel reference oracle for future MPC equivalence tests.
+- [ ] Implement and verify the secret-shared SHA-384 compression/HMAC/HKDF circuit.
 - [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
 - [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.
