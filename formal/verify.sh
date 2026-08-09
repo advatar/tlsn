@@ -14,6 +14,7 @@ lean formal/lean/Tls13HkdfLabel.lean
 lean formal/lean/Tls13Sha384.lean
 cargo kani -p tlsn-mpc-tls --quiet --output-format terse
 cargo test -p tlsn-mpc-tls sha384_application_material_installs_typed_epochs --quiet
+cargo test -p tlsn-mpc-tls sha384_finished_callback_returns_public_verify_data --quiet
 
 tamarin-prover --prove --quiet "$model" | tee "$proof_output"
 

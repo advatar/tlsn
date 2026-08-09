@@ -136,6 +136,10 @@ to select this path in a live handshake.
 and Tamarin checks, so the formal gate covers the latest circuit-to-epoch
 feature as an executable refinement check.
 
+The wrapper also runs the state-level SHA-384 Finished callback test, which
+checks that both parties jointly compute public 48-byte verify data while the
+Finished key remains secret-shared.
+
 The SHA-384 component also derives typed handshake key, IV, and 48-byte
 Finished-key views from the secret-shared handshake secret and transcript;
 these outputs are checked against the clear TLS 1.3 reference.
