@@ -162,3 +162,7 @@ Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 They prove successful advancement, generation preservation, exhaustion without
 wrap, and fixed-IV nonce injectivity. Kani verifies these isolated functions;
 it does not establish whole-program refinement or concurrency properties.
+
+The inter-party handshake-hash transport now carries length-delimited bytes,
+so it can represent SHA-384 transcripts; the legacy receiver still rejects
+non-32-byte hashes until suite dispatch is enabled.

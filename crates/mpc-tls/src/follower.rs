@@ -402,6 +402,9 @@ impl MpcTlsFollower {
                 }
                 Message::Tls13HandshakeHash(Tls13HandshakeHash { handshake_hash }) => {
                     debug!("setting TLS 1.3 application handshake hash");
+                    let handshake_hash: [u8; 32] = handshake_hash
+                        .try_into()
+                        .map_err(|_| MpcTlsError::hs("SHA-256 handshake hash must be 32 bytes"))?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;

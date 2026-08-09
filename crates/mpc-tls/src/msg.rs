@@ -94,7 +94,8 @@ pub(crate) struct Tls13HelloHash {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13HandshakeHash {
-    pub(crate) handshake_hash: [u8; 32],
+    /// Transcript hash bytes; SHA-256 is 32 bytes and SHA-384 is 48 bytes.
+    pub(crate) handshake_hash: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

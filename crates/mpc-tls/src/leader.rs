@@ -838,7 +838,7 @@ impl Backend for MpcTlsLeader {
             debug!("setting TLS 1.3 application handshake hash");
             ctx.io_mut()
                 .send(Message::Tls13HandshakeHash(Tls13HandshakeHash {
-                    handshake_hash: hash,
+                    handshake_hash: hash.to_vec(),
                 }))
                 .await
                 .map_err(MpcTlsError::from)?;
