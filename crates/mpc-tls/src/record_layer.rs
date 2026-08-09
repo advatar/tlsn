@@ -52,6 +52,19 @@ pub(crate) struct EncryptedRecord {
     pub(crate) tag: Option<Vec<u8>>,
 }
 
+/// TLS 1.3 application material selected by the negotiated cipher suite.
+pub(crate) enum Tls13ApplicationMaterial {
+    /// TLS_AES_128_GCM_SHA256 material.
+    Sha256(hmac_sha256::ApplicationKeys),
+    /// TLS_AES_256_GCM_SHA384 material retained as VM views.
+    Sha384 {
+        client_key: Array<U8, 32>,
+        client_iv: Array<U8, 12>,
+        server_key: Array<U8, 32>,
+        server_iv: Array<U8, 12>,
+    },
+}
+
 enum State {
     Init,
     Online {
@@ -144,7 +157,7 @@ impl RecordLayer {
         sent_len: usize,
         recv_len_online: usize,
         recv_len: usize,
-        tls13_keys: hmac_sha256::ApplicationKeys,
+        tls13_keys: Tls13ApplicationMaterial,
     ) -> Result<Array<U8, 16>, MpcTlsError> {
         let State::Init = self.state.take() else {
             return Err(MpcTlsError::other("record layer is already allocated"));
@@ -168,28 +181,20 @@ impl RecordLayer {
             .alloc(vm, recv_records, recv_len_online)
             .map_err(MpcTlsError::record_layer)?;
 
-        encrypt
-            .prepare_tls13_key(vm, tls13_keys.client_write_key)
-            .map_err(MpcTlsError::record_layer)?;
-        decrypt
-            .prepare_tls13_key(vm, tls13_keys.server_write_key)
-            .map_err(MpcTlsError::record_layer)?;
-        encrypt
-            .alloc_tls13_records(
-                vm,
-                tls13_keys.client_iv,
-                sent_records,
-                sent_len.min(MAX_RECORD_SIZE) + 1,
-            )
-            .map_err(MpcTlsError::record_layer)?;
-        decrypt
-            .alloc_tls13_records(
-                vm,
-                tls13_keys.server_iv,
-                recv_records,
-                recv_len.min(MAX_RECORD_SIZE) + 1,
-            )
-            .map_err(MpcTlsError::record_layer)?;
+        match tls13_keys {
+            Tls13ApplicationMaterial::Sha256(keys) => {
+                encrypt.prepare_tls13_key(vm, keys.client_write_key).map_err(MpcTlsError::record_layer)?;
+                decrypt.prepare_tls13_key(vm, keys.server_write_key).map_err(MpcTlsError::record_layer)?;
+                encrypt.alloc_tls13_records(vm, keys.client_iv, sent_records, sent_len.min(MAX_RECORD_SIZE) + 1).map_err(MpcTlsError::record_layer)?;
+                decrypt.alloc_tls13_records(vm, keys.server_iv, recv_records, recv_len.min(MAX_RECORD_SIZE) + 1).map_err(MpcTlsError::record_layer)?;
+            }
+            Tls13ApplicationMaterial::Sha384 { client_key, client_iv, server_key, server_iv } => {
+                encrypt.prepare_tls13_key_256(vm, client_key).map_err(MpcTlsError::record_layer)?;
+                decrypt.prepare_tls13_key_256(vm, server_key).map_err(MpcTlsError::record_layer)?;
+                encrypt.alloc_tls13_records_256(vm, client_iv, sent_records, sent_len.min(MAX_RECORD_SIZE) + 1).map_err(MpcTlsError::record_layer)?;
+                decrypt.alloc_tls13_records_256(vm, server_iv, recv_records, recv_len.min(MAX_RECORD_SIZE) + 1).map_err(MpcTlsError::record_layer)?;
+            }
+        };
 
         let recv_otp = match self.role {
             Role::Leader => {

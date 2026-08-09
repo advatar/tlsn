@@ -8,7 +8,7 @@ use crate::{
     },
     record_layer::{
         aead::MpcAesGcm, DecryptMode as RecordDecryptMode, EncryptMode as RecordEncryptMode,
-        RecordLayer,
+        RecordLayer, Tls13ApplicationMaterial,
     },
     tls13::{Epoch, Tls13KeyState},
     utils::opaque_into_parts,
@@ -191,7 +191,7 @@ impl MpcTlsLeader {
             self.config.max_sent,
             self.config.max_recv_online,
             self.config.max_recv,
-            tls13_application_keys,
+            Tls13ApplicationMaterial::Sha256(tls13_application_keys),
         )?;
 
         let keys: SessionKeys = SessionKeys {

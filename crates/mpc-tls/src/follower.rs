@@ -4,7 +4,7 @@ use crate::{
         Tls13EncryptApplication, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
         Tls13ServerFinishedVd,
     },
-    record_layer::{aead::MpcAesGcm, RecordLayer},
+    record_layer::{aead::MpcAesGcm, RecordLayer, Tls13ApplicationMaterial},
     tls13::Tls13KeyState,
     Config, MpcTlsError, Role, SessionKeys, Vm,
 };
@@ -143,7 +143,7 @@ impl MpcTlsFollower {
                 self.config.max_sent,
                 self.config.max_recv_online,
                 self.config.max_recv,
-                tls13_application_keys,
+                Tls13ApplicationMaterial::Sha256(tls13_application_keys),
             )?;
 
             (keys, cf_vd, sf_vd, server_write_mac_key)
