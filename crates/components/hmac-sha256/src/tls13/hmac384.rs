@@ -68,3 +68,55 @@ pub(crate) fn ipad_partial(vm: &mut dyn Vm<Binary>, key: Vector<U8>) -> Result<S
 pub(crate) fn opad_partial(vm: &mut dyn Vm<Binary>, key: Vector<U8>) -> Result<Sha384, FError> {
     compute_partial(vm, key, OPAD)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::mock_vm;
+    use hmac::{Hmac, Mac};
+    use mpz_common::context::test_st_context;
+    use mpz_vm_core::{memory::MemoryExt, Execute};
+    use sha2::Sha384;
+
+    #[tokio::test]
+    async fn hmac_sha384_matches_clear_reference() {
+        let key = [0x11u8; 48];
+        let msg = [0x22u8; 37];
+        let (mut ctx_a, mut ctx_b) = test_st_context(8);
+        let (mut leader, mut follower) = mock_vm();
+
+        let run = |vm: &mut (dyn Vm<Binary> + Send)| {
+            let key_ref = vm.alloc_vec(key.len()).unwrap();
+            vm.mark_public(key_ref).unwrap();
+            vm.assign(key_ref, key.to_vec()).unwrap();
+            vm.commit(key_ref).unwrap();
+
+            let msg_ref = vm.alloc_vec(msg.len()).unwrap();
+            vm.mark_public(msg_ref).unwrap();
+            vm.assign(msg_ref, msg.to_vec()).unwrap();
+            vm.commit(msg_ref).unwrap();
+
+            let mut inner = ipad_partial(vm, key_ref).unwrap();
+            inner.update(&msg_ref);
+            inner.compress(vm).unwrap();
+            let inner_local = inner.finalize(vm).unwrap();
+            let outer = opad_partial(vm, key_ref).unwrap();
+            let output = hmac_sha384(vm, outer, inner_local).unwrap();
+            vm.decode(output).unwrap()
+        };
+        let mut leader_decoded = run(&mut leader);
+        let mut follower_decoded = run(&mut follower);
+
+        tokio::try_join!(
+            async { leader.execute_all(&mut ctx_a).await },
+            async { follower.execute_all(&mut ctx_b).await },
+        ).unwrap();
+        let actual = leader_decoded.try_recv().unwrap().unwrap();
+        assert_eq!(actual, follower_decoded.try_recv().unwrap().unwrap());
+
+        let mut reference = Hmac::<Sha384>::new_from_slice(&key).unwrap();
+        reference.update(&msg);
+        let expected: [u8; 48] = reference.finalize().into_bytes().into();
+        assert_eq!(actual, expected);
+    }
+}
