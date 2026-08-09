@@ -101,6 +101,11 @@ separate ChaCha20-Poly1305 circuit milestone, is documented in
 As groundwork, the repository now includes clear SHA-384 HKDF and
 `HkdfLabel` reference functions with tests; these are oracles for a future MPC
 implementation and are not used as a secret-processing fallback.
+The formal suite boundary also includes a separate Tamarin model for
+`TLS_AES_256_GCM_SHA384`: three lemmas verify SHA-384 Finished acceptance,
+Finished-before-application-secret ordering, and transcript-context binding.
+This is symbolic evidence only; AES-256 negotiation remains disabled in the
+production backend until the concrete key schedule and circuit are integrated.
 
 The prover occupies several adversarial roles simultaneously:
 
@@ -204,6 +209,11 @@ A fourth, deliberately minimal, diff model checks that changing unrevealed
 bytes while keeping the public projection fixed is observationally invisible.
 This is a boundary test for the disclosure interface, not a proof of the
 production circuit or serialization format.
+
+A fifth model covers the SHA-384/AES-256 suite boundary. It verifies that a
+SHA-384 Finished event precedes acceptance and application-secret installation,
+and that the installed application context is bound to the SHA-384 transcript.
+It intentionally remains separate from the current SHA-256 production path.
 
 ## Open composition theorem
 
