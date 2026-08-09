@@ -105,6 +105,8 @@ pub(crate) struct RecordLayer {
     max_recv_online: usize,
     /// Maximum number of bytes received.
     max_recv: usize,
+    max_sent_records: usize,
+    max_recv_records: usize,
 
     encrypt_buffer: Vec<EncryptOp>,
     decrypt_buffer: Vec<DecryptOp>,
@@ -130,6 +132,8 @@ impl RecordLayer {
             max_sent: 0,
             max_recv_online: 0,
             max_recv: 0,
+            max_sent_records: 0,
+            max_recv_records: 0,
             encrypt_buffer: Vec::new(),
             decrypt_buffer: Vec::new(),
             encrypted_buffer: VecDeque::new(),
@@ -151,7 +155,7 @@ impl RecordLayer {
     /// * `recv_len` - Total length of received records to allocate.
     pub(crate) fn alloc(
         &mut self,
-        vm: &mut dyn VmTrait<Binary>,
+        vm: &mut (dyn VmTrait<Binary> + Send),
         sent_records: usize,
         recv_records: usize,
         sent_len: usize,
@@ -211,6 +215,8 @@ impl RecordLayer {
         self.max_sent += sent_len;
         self.max_recv_online += recv_len_online;
         self.max_recv += recv_len;
+        self.max_sent_records = sent_records;
+        self.max_recv_records = recv_records;
 
         self.state = State::Online {
             recv_otp,
@@ -219,6 +225,28 @@ impl RecordLayer {
         };
 
         decrypt.ghash_key().map_err(MpcTlsError::record_layer)
+    }
+
+    /// Installs retained SHA-384 application epochs after the handshake hash
+    /// is known, then prepares the AES-256 record/GHASH domains.
+    pub(crate) async fn setup_tls13_sha384(
+        &mut self,
+        vm: &mut (dyn VmTrait<Binary> + Send),
+        ctx: &mut Context,
+        client_key: Array<U8, 32>,
+        client_iv: Array<U8, 12>,
+        server_key: Array<U8, 32>,
+        server_iv: Array<U8, 12>,
+    ) -> Result<(), MpcTlsError> {
+        let mut encrypt = self.encrypter.try_lock().map_err(|_| MpcTlsError::other("encrypt lock is held"))?;
+        let mut decrypt = self.decrypt.try_lock().map_err(|_| MpcTlsError::other("decrypt lock is held"))?;
+        encrypt.prepare_tls13_key_256(vm, client_key).map_err(MpcTlsError::record_layer)?;
+        decrypt.prepare_tls13_key_256(vm, server_key).map_err(MpcTlsError::record_layer)?;
+        encrypt.alloc_tls13_records_256(vm, client_iv, self.max_sent_records, self.max_sent.min(MAX_RECORD_SIZE) + 1).map_err(MpcTlsError::record_layer)?;
+        decrypt.alloc_tls13_records_256(vm, server_iv, self.max_recv_records, self.max_recv.min(MAX_RECORD_SIZE) + 1).map_err(MpcTlsError::record_layer)?;
+        drop(encrypt);
+        drop(decrypt);
+        self.setup_inner(ctx, true).await
     }
 
     pub(crate) async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), MpcTlsError> {

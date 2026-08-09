@@ -43,6 +43,8 @@ pub struct WriteEpoch<K, I> {
 }
 
 impl<K, I> WriteEpoch<K, I> {
+    pub(crate) fn key(&self) -> K where K: Copy { self.key }
+    pub(crate) fn iv(&self) -> I where I: Copy { self.iv }
     fn new(epoch: Epoch, generation: u64, key: K, iv: I) -> Self {
         Self {
             epoch,
@@ -76,6 +78,11 @@ impl<K, I> WriteEpoch<K, I> {
             .ok_or_else(|| MpcTlsError::hs("tls13 write sequence exhausted"))?;
         Ok(sequence)
     }
+}
+
+impl<K, I> ReadEpoch<K, I> {
+    pub(crate) fn key(&self) -> K where K: Copy { self.key }
+    pub(crate) fn iv(&self) -> I where I: Copy { self.iv }
 }
 
 /// A TLS 1.3 read-key epoch with an exclusively owned record sequence number.

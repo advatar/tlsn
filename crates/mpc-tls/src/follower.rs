@@ -414,7 +414,9 @@ impl MpcTlsFollower {
                         }
                         48 => {
                             tls13.set_sha384_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash.try_into().unwrap()).await?;
-                            debug!("TLS 1.3 SHA-384 handshake epochs are ready; application epoch follows suite dispatch");
+                            let app = tls13.session_keys().sha384_application.as_ref().ok_or_else(|| MpcTlsError::state("SHA-384 application epochs were not installed"))?;
+                            record_layer.setup_tls13_sha384(&mut *vm, &mut self.ctx, app.client.key(), app.client.iv(), app.server.key(), app.server.iv()).await?;
+                            debug!("TLS 1.3 SHA-384 application record layer is ready");
                         }
                         _ => return Err(MpcTlsError::hs("TLS 1.3 handshake hash must be 32 or 48 bytes")),
                     }
