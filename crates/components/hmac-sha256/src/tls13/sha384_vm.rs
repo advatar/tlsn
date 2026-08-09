@@ -11,7 +11,7 @@ use mpz_vm_core::{
 
 use super::sha384_circuit::sha384_compress_circuit;
 
-static SHA384_COMPRESS: LazyLock<Arc<Circuit>> =
+pub(crate) static SHA384_COMPRESS: LazyLock<Arc<Circuit>> =
     LazyLock::new(|| Arc::new(sha384_compress_circuit()));
 
 /// Calls one secret-shared SHA-512 compression block for SHA-384.
