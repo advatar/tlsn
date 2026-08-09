@@ -30,6 +30,8 @@ mod sha384_vm;
 mod sha384;
 #[allow(dead_code)]
 mod hmac384;
+#[allow(dead_code)]
+mod hkdf384;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]
