@@ -274,7 +274,7 @@ pub struct CertBindingV1_3 {
     /// Server's ephemeral public key.
     pub server_ephemeral_key: ServerEphemKey,
     /// Transcript hash used by the server `CertificateVerify` signature.
-    pub cert_verify_transcript_hash: [u8; 32],
+    pub cert_verify_transcript_hash: Vec<u8>,
 }
 
 /// TLS certificate binding.

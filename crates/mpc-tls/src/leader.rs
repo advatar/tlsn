@@ -4,7 +4,7 @@ use crate::{
         ClientFinishedVd, Decrypt, Encrypt, Message, ServerFinishedVd, SetClientRandom,
         SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake, Tls13CertVerify,
         Tls13ClientFinishedVd, Tls13DecryptApplication, Tls13EncryptApplication,
-        Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
+        Tls13FinishedHash, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
     },
     record_layer::{
         aead::MpcAesGcm, DecryptMode as RecordDecryptMode, EncryptMode as RecordEncryptMode,
@@ -174,6 +174,8 @@ impl MpcTlsLeader {
         let PrfOutput { keys, cf_vd, sf_vd } = prf.alloc(&mut (*vm_lock), pms)?;
         tls13.alloc(&mut (*vm_lock), pms)?;
         let tls13_application_keys = tls13.allocated_application_keys()?;
+        let (sha384_client_key, sha384_client_iv, sha384_server_key, sha384_server_iv) =
+            tls13.allocated_sha384_application_keys()?;
         record_layer.set_keys(
             keys.client_write_key,
             keys.client_iv,
@@ -192,6 +194,13 @@ impl MpcTlsLeader {
             self.config.max_recv_online,
             self.config.max_recv,
             Tls13ApplicationMaterial::Sha256(tls13_application_keys),
+        )?;
+        record_layer.preallocate_tls13_sha384(
+            &mut *vm_lock,
+            sha384_client_key,
+            sha384_client_iv,
+            sha384_server_key,
+            sha384_server_iv,
         )?;
 
         let keys: SessionKeys = SessionKeys {
@@ -557,12 +566,6 @@ impl Backend for MpcTlsLeader {
             );
         };
 
-        if matches!(suite, SupportedCipherSuite::Tls13(_))
-            && suite.suite() != CipherSuite::TLS13_AES_128_GCM_SHA256
-        {
-            return Err(BackendError::UnsupportedCiphersuite(suite.suite()));
-        }
-
         trace!("setting cipher suite: {:?}", suite);
 
         *cipher_suite = Some(suite.suite());
@@ -776,9 +779,10 @@ impl Backend for MpcTlsLeader {
         cert_verify: DigitallySignedStruct,
         handshake_hash: Vec<u8>,
     ) -> Result<(), BackendError> {
-        let transcript_hash: [u8; 32] = handshake_hash
-            .try_into()
-            .map_err(|_| MpcTlsError::hs("tls13 cert verify hash is not 32 bytes"))?;
+        if !matches!(handshake_hash.len(), 32 | 48) {
+            return Err(MpcTlsError::hs("tls13 cert verify hash must be 32 or 48 bytes").into());
+        }
+        let transcript_hash = handshake_hash;
 
         let State::Handshake {
             ctx,
@@ -802,7 +806,7 @@ impl Backend for MpcTlsLeader {
             alg: tls13_signature_scheme(cert_verify.scheme)?,
             sig: cert_verify.sig.0.clone(),
         });
-        *tls13_cert_verify_transcript_hash = Some(transcript_hash);
+        *tls13_cert_verify_transcript_hash = Some(transcript_hash.clone());
 
         ctx.io_mut()
             .send(Message::Tls13CertVerify(Tls13CertVerify {
@@ -893,7 +897,7 @@ impl Backend for MpcTlsLeader {
                 .map_err(|_| MpcTlsError::other("VM lock is held"))?;
             match hash.len() {
                 32 => tls13.set_hello_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
-                48 => tls13.set_sha384_handshake_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
+                48 => tls13.set_sha384_hello_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
                 _ => return Err(MpcTlsError::hs("TLS 1.3 hello hash must be 32 or 48 bytes").into()),
             }
             debug!("TLS 1.3 application AEAD circuits preallocated");
@@ -916,6 +920,13 @@ impl Backend for MpcTlsLeader {
                     protocol_version: Some(ProtocolVersion::TLSv1_3),
                     ..
                 } => {
+                    ctx.io_mut()
+                        .send(Message::Tls13FinishedHash(Tls13FinishedHash {
+                            handshake_hash: hash.to_vec(),
+                            server: true,
+                        }))
+                        .await
+                        .map_err(MpcTlsError::from)?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -1014,6 +1025,13 @@ impl Backend for MpcTlsLeader {
                     protocol_version: Some(ProtocolVersion::TLSv1_3),
                     ..
                 } => {
+                    ctx.io_mut()
+                        .send(Message::Tls13FinishedHash(Tls13FinishedHash {
+                            handshake_hash: hash.to_vec(),
+                            server: false,
+                        }))
+                        .await
+                        .map_err(MpcTlsError::from)?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -1790,7 +1808,7 @@ enum State {
         server_key: Option<PublicKey>,
         server_kx_details: Option<ServerKxDetails>,
         tls13_server_signature: Option<ServerSignature>,
-        tls13_cert_verify_transcript_hash: Option<[u8; 32]>,
+        tls13_cert_verify_transcript_hash: Option<Vec<u8>>,
     },
     Active {
         ctx: Context,
@@ -1812,7 +1830,7 @@ enum State {
         server_key: PublicKey,
         server_kx_details: Option<ServerKxDetails>,
         tls13_server_signature: Option<ServerSignature>,
-        tls13_cert_verify_transcript_hash: Option<[u8; 32]>,
+        tls13_cert_verify_transcript_hash: Option<Vec<u8>>,
     },
     Closed {
         ctx: Context,

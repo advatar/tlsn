@@ -1,6 +1,7 @@
 use crate::{
     msg::{
         Message, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd, Tls13DecryptApplication,
+        Tls13FinishedHash,
         Tls13EncryptApplication, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
         Tls13ServerFinishedVd,
     },
@@ -126,6 +127,8 @@ impl MpcTlsFollower {
             let PrfOutput { keys, cf_vd, sf_vd } = prf.alloc(vm, pms)?;
             tls13.alloc(vm, pms)?;
             let tls13_application_keys = tls13.allocated_application_keys()?;
+            let (sha384_client_key, sha384_client_iv, sha384_server_key, sha384_server_iv) =
+                tls13.allocated_sha384_application_keys()?;
             record_layer.set_keys(
                 keys.client_write_key,
                 keys.client_iv,
@@ -144,6 +147,13 @@ impl MpcTlsFollower {
                 self.config.max_recv_online,
                 self.config.max_recv,
                 Tls13ApplicationMaterial::Sha256(tls13_application_keys),
+            )?;
+            record_layer.preallocate_tls13_sha384(
+                vm,
+                sha384_client_key,
+                sha384_client_iv,
+                sha384_server_key,
+                sha384_server_iv,
             )?;
 
             (keys, cf_vd, sf_vd, server_write_mac_key)
@@ -396,7 +406,7 @@ impl MpcTlsFollower {
 
                     match hello_hash.len() {
                         32 => tls13.set_hello_hash(&mut self.ctx, &mut *vm, hello_hash.try_into().unwrap()).await?,
-                        48 => tls13.set_sha384_handshake_hash(&mut self.ctx, &mut *vm, hello_hash.try_into().unwrap()).await?,
+                        48 => tls13.set_sha384_hello_hash(&mut self.ctx, &mut *vm, hello_hash.try_into().unwrap()).await?,
                         _ => return Err(MpcTlsError::hs("TLS 1.3 hello hash must be 32 or 48 bytes")),
                     }
                     debug!("TLS 1.3 application AEAD circuits preallocated");
@@ -422,6 +432,19 @@ impl MpcTlsFollower {
                         }
                         _ => return Err(MpcTlsError::hs("TLS 1.3 handshake hash must be 32 or 48 bytes")),
                     }
+                }
+                Message::Tls13FinishedHash(Tls13FinishedHash { handshake_hash, server }) => {
+                    let mut vm = vm
+                        .try_lock()
+                        .map_err(|_| MpcTlsError::other("VM lock is held"))?;
+                    let _ = tls13
+                        .sha384_finished_vd(
+                            &mut self.ctx,
+                            &mut *vm,
+                            handshake_hash.try_into().map_err(|_| MpcTlsError::hs("SHA-384 Finished hash must be 48 bytes"))?,
+                            server,
+                        )
+                        .await?;
                 }
                 Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
                     handshake_hash: _,

@@ -46,6 +46,7 @@ enum State {
         ghash: Box<dyn Ghash + Send + Sync>,
         ghash_key: Array<U8, 16>,
         tls13_records: VecDeque<Tls13Record>,
+        tls13_records_256: VecDeque<Tls13Record>,
     },
     Ready {
         input: Vector<U8>,
@@ -54,6 +55,7 @@ enum State {
         ghash: Arc<dyn Ghash + Send + Sync>,
         ghash_key: Array<U8, 16>,
         tls13_records: VecDeque<Tls13Record>,
+        tls13_records_256: VecDeque<Tls13Record>,
     },
     Error,
 }
@@ -149,6 +151,7 @@ impl MpcAesGcm {
             ghash_key_shares: vec![ghash_key_share],
             ghash_key,
             tls13_records: VecDeque::new(),
+            tls13_records_256: VecDeque::new(),
         };
 
         Ok(())
@@ -268,7 +271,7 @@ impl MpcAesGcm {
         max_len: usize,
     ) -> Result<(), AeadError> {
         use crate::tls13::nonce::split_iv_and_derive_nonce;
-        let State::Setup { tls13_records, .. } = &mut self.state else {
+        let State::Setup { tls13_records_256, .. } = &mut self.state else {
             return Err(AeadError::state("must be in setup state to allocate TLS 1.3 AES-256 records"));
         };
         let padded_len = 16 * max_len.div_ceil(16);
@@ -286,7 +289,7 @@ impl MpcAesGcm {
             let j0 = self.tls13_aes256.alloc_ctr_block_with_nonce(vm, nonce)?;
             let j0_shared = OneTimePadShared::<[u8; 16]>::new(self.role, j0.output, vm)?;
             assign_j0_counter(vm, j0)?;
-            tls13_records.push_back(Tls13Record { leader_input, follower_input, output, j0: j0_shared });
+            tls13_records_256.push_back(Tls13Record { leader_input, follower_input, output, j0: j0_shared });
         }
         Ok(())
     }
@@ -443,6 +446,7 @@ impl MpcAesGcm {
             mut ghash,
             ghash_key,
             tls13_records,
+            tls13_records_256,
         } = self.state.take()
         else {
             return Err(AeadError::state("must be in setup state to set up"));
@@ -462,6 +466,7 @@ impl MpcAesGcm {
             ghash: Arc::from(ghash),
             ghash_key,
             tls13_records,
+            tls13_records_256,
         };
 
         Ok(())
@@ -471,6 +476,7 @@ impl MpcAesGcm {
     pub(crate) fn take_tls13_record(
         &mut self,
         len: usize,
+        aes256: bool,
     ) -> Result<
         (
             Vector<U8>,
@@ -480,17 +486,18 @@ impl MpcAesGcm {
         ),
         AeadError,
     > {
-        let State::Ready { tls13_records, .. } = &mut self.state else {
+        let State::Ready { tls13_records, tls13_records_256, .. } = &mut self.state else {
             return Err(AeadError::state(
                 "must be in ready state to take a TLS 1.3 record",
             ));
         };
+        let records = if aes256 { tls13_records_256 } else { tls13_records };
         let Tls13Record {
             leader_input,
             follower_input,
             mut output,
             j0,
-        } = tls13_records
+        } = records
             .pop_front()
             .ok_or_else(|| AeadError::state("no preallocated TLS 1.3 records remain"))?;
         if len > output.len() {
@@ -506,13 +513,14 @@ impl MpcAesGcm {
     pub(crate) fn drain_tls13_inputs(
         &mut self,
     ) -> Result<Vec<(Vector<U8>, Vector<U8>)>, AeadError> {
-        let State::Ready { tls13_records, .. } = &mut self.state else {
+        let State::Ready { tls13_records, tls13_records_256, .. } = &mut self.state else {
             return Err(AeadError::state(
                 "must be in ready state to drain TLS 1.3 records",
             ));
         };
         Ok(tls13_records
             .drain(..)
+            .chain(tls13_records_256.drain(..))
             .map(|record| (record.leader_input, record.follower_input))
             .collect())
     }

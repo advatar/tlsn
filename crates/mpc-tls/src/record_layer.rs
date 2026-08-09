@@ -107,6 +107,7 @@ pub(crate) struct RecordLayer {
     max_recv: usize,
     max_sent_records: usize,
     max_recv_records: usize,
+    tls13_aes256: bool,
 
     encrypt_buffer: Vec<EncryptOp>,
     decrypt_buffer: Vec<DecryptOp>,
@@ -134,6 +135,7 @@ impl RecordLayer {
             max_recv: 0,
             max_sent_records: 0,
             max_recv_records: 0,
+            tls13_aes256: false,
             encrypt_buffer: Vec::new(),
             decrypt_buffer: Vec::new(),
             encrypted_buffer: VecDeque::new(),
@@ -231,8 +233,37 @@ impl RecordLayer {
     /// is known, then prepares the AES-256 record/GHASH domains.
     pub(crate) async fn setup_tls13_sha384(
         &mut self,
-        vm: &mut (dyn VmTrait<Binary> + Send),
+        _vm: &mut (dyn VmTrait<Binary> + Send),
         ctx: &mut Context,
+        _client_key: Array<U8, 32>,
+        _client_iv: Array<U8, 12>,
+        _server_key: Array<U8, 32>,
+        _server_iv: Array<U8, 12>,
+    ) -> Result<(), MpcTlsError> {
+        self.tls13_aes256 = true;
+        let mut encrypt = self
+            .encrypter
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| MpcTlsError::other("encrypt lock is held"))?;
+        let mut decrypt = self
+            .decrypt
+            .clone()
+            .try_lock_owned()
+            .map_err(|_| MpcTlsError::other("decrypt lock is held"))?;
+        ctx.try_join(
+            async move |ctx| encrypt.setup_tls13_256(ctx).await,
+            async move |ctx| decrypt.setup_tls13_256(ctx).await,
+        )
+        .await
+        .map_err(MpcTlsError::record_layer)?
+        .map_err(MpcTlsError::record_layer)?;
+        Ok(())
+    }
+
+    pub(crate) fn preallocate_tls13_sha384(
+        &mut self,
+        vm: &mut (dyn VmTrait<Binary> + Send),
         client_key: Array<U8, 32>,
         client_iv: Array<U8, 12>,
         server_key: Array<U8, 32>,
@@ -246,7 +277,7 @@ impl RecordLayer {
         decrypt.alloc_tls13_records_256(vm, server_iv, self.max_recv_records, self.max_recv.min(MAX_RECORD_SIZE) + 1).map_err(MpcTlsError::record_layer)?;
         drop(encrypt);
         drop(decrypt);
-        self.setup_inner(ctx, true).await
+        Ok(())
     }
 
     pub(crate) async fn preprocess(&mut self, ctx: &mut Context) -> Result<(), MpcTlsError> {
@@ -376,7 +407,7 @@ impl RecordLayer {
             .map_err(|_| MpcTlsError::record_layer("encrypt lock is held"))?;
 
         let (leader_input, follower_input, output, j0) = encrypter
-            .take_tls13_record(len)
+            .take_tls13_record(len, self.tls13_aes256)
             .map_err(MpcTlsError::record_layer)?;
         let (local_input, mut local_value) = match self.role {
             Role::Leader => (
@@ -447,7 +478,7 @@ impl RecordLayer {
             .map_err(|_| MpcTlsError::record_layer("decrypt lock is held"))?;
 
         let (leader_mask, follower_mask, masked_keystream, j0) = decrypter
-            .take_tls13_record(ciphertext.len())
+            .take_tls13_record(ciphertext.len(), self.tls13_aes256)
             .map_err(MpcTlsError::record_layer)?;
         let local_mask = match self.role {
             Role::Leader => leader_mask,

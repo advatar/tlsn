@@ -2,12 +2,14 @@
 
 use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, prelude::MemoryExt, Vm};
 use crate::FError;
-use super::{hkdf384::HkdfExpand384, hkdf_extract384::HkdfExtract384};
+use super::{hkdf384::{HkdfExpand384, EMPTY_HASH_SHA384, zero_hash}, hkdf_extract384::HkdfExtract384};
 use crate::Mode;
 
 /// SHA-384 handshake traffic keys, IVs, and Finished keys.
 #[derive(Debug)]
 pub struct Sha384HandshakeKeys {
+    client_traffic: HkdfExpand384,
+    server_traffic: HkdfExpand384,
     client_key: HkdfExpand384,
     client_iv: HkdfExpand384,
     client_finished: HkdfExpand384,
@@ -27,17 +29,40 @@ impl Sha384HandshakeKeys {
         transcript_hash: &[u8; 48],
     ) -> Result<Self, FError> {
         let empty_salt = vm.alloc_vec(0).map_err(FError::vm)?;
-        let empty_ikm = vm.alloc_vec(0).map_err(FError::vm)?;
+        let empty_ikm = zero_hash(vm)?;
         let early = HkdfExtract384::alloc(mode, vm, empty_salt, &[empty_ikm])?;
-        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48)?;
-        derived.set_context(vm, &[])?;
+        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48, 48)?;
+        derived.set_context(vm, &EMPTY_HASH_SHA384)?;
         let handshake = HkdfExtract384::alloc(
             mode,
             vm,
             derived.output()?.into(),
             &[shared_secret.into()],
         )?;
-        Self::alloc(vm, handshake.output().into(), transcript_hash)
+        let mut keys = Self::alloc_deferred(vm, handshake.output().into())?;
+        keys.set_transcript(vm, transcript_hash)?;
+        Ok(keys)
+    }
+
+    /// Preallocates the no-PSK schedule before the ServerHello transcript is
+    /// available.
+    pub fn alloc_from_shared_secret_deferred(
+        mode: Mode,
+        vm: &mut dyn Vm<Binary>,
+        shared_secret: Array<U8, 32>,
+    ) -> Result<Self, FError> {
+        let empty_salt = vm.alloc_vec(0).map_err(FError::vm)?;
+        let empty_ikm = zero_hash(vm)?;
+        let early = HkdfExtract384::alloc(mode, vm, empty_salt, &[empty_ikm])?;
+        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48, 48)?;
+        derived.set_context(vm, &EMPTY_HASH_SHA384)?;
+        let handshake = HkdfExtract384::alloc(
+            mode,
+            vm,
+            derived.output()?.into(),
+            &[shared_secret.into()],
+        )?;
+        Self::alloc_deferred(vm, handshake.output().into())
     }
 
     /// Allocates handshake material from a secret-shared handshake secret.
@@ -46,17 +71,36 @@ impl Sha384HandshakeKeys {
         handshake_secret: Vector<U8>,
         transcript_hash: &[u8; 48],
     ) -> Result<Self, FError> {
-        let mut client_traffic = HkdfExpand384::alloc(vm, handshake_secret, b"c hs traffic", 48)?;
-        let mut server_traffic = HkdfExpand384::alloc(vm, handshake_secret, b"s hs traffic", 48)?;
-        client_traffic.set_context(vm, transcript_hash)?;
-        server_traffic.set_context(vm, transcript_hash)?;
-        let client_key = HkdfExpand384::alloc(vm, client_traffic.output()?.into(), b"key", 32)?;
-        let client_iv = HkdfExpand384::alloc(vm, client_traffic.output()?.into(), b"iv", 12)?;
-        let client_finished = HkdfExpand384::alloc(vm, client_traffic.output()?.into(), b"finished", 48)?;
-        let server_key = HkdfExpand384::alloc(vm, server_traffic.output()?.into(), b"key", 32)?;
-        let server_iv = HkdfExpand384::alloc(vm, server_traffic.output()?.into(), b"iv", 12)?;
-        let server_finished = HkdfExpand384::alloc(vm, server_traffic.output()?.into(), b"finished", 48)?;
-        Ok(Self { client_key, client_iv, client_finished, server_key, server_iv, server_finished })
+        let mut keys = Self::alloc_deferred(vm, handshake_secret)?;
+        keys.set_transcript(vm, transcript_hash)?;
+        Ok(keys)
+    }
+
+    fn alloc_deferred(
+        vm: &mut dyn Vm<Binary>,
+        handshake_secret: Vector<U8>,
+    ) -> Result<Self, FError> {
+        let client_traffic = HkdfExpand384::alloc(vm, handshake_secret, b"c hs traffic", 48, 48)?;
+        let server_traffic = HkdfExpand384::alloc(vm, handshake_secret, b"s hs traffic", 48, 48)?;
+        let client_key = HkdfExpand384::alloc(vm, client_traffic.output()?.into(), b"key", 32, 0)?;
+        let client_iv = HkdfExpand384::alloc(vm, client_traffic.output()?.into(), b"iv", 12, 0)?;
+        let client_finished = HkdfExpand384::alloc(vm, client_traffic.output()?.into(), b"finished", 48, 0)?;
+        let server_key = HkdfExpand384::alloc(vm, server_traffic.output()?.into(), b"key", 32, 0)?;
+        let server_iv = HkdfExpand384::alloc(vm, server_traffic.output()?.into(), b"iv", 12, 0)?;
+        let server_finished = HkdfExpand384::alloc(vm, server_traffic.output()?.into(), b"finished", 48, 0)?;
+        Ok(Self { client_traffic, server_traffic, client_key, client_iv, client_finished, server_key, server_iv, server_finished })
+    }
+
+    /// Assigns the public ServerHello transcript to the preallocated traffic
+    /// secret expansions.
+    pub fn set_transcript(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        transcript_hash: &[u8; 48],
+    ) -> Result<(), FError> {
+        self.client_traffic.set_context(vm, transcript_hash)?;
+        self.server_traffic.set_context(vm, transcript_hash)?;
+        Ok(())
     }
 
     /// Allocates empty contexts for all handshake labels.
@@ -156,8 +200,8 @@ mod tests {
         ).unwrap();
         let actual = left.try_recv().unwrap().unwrap();
         assert_eq!(actual, right.try_recv().unwrap().unwrap());
-        let early = hkdf_extract_sha384(&[], &[]);
-        let derived = hkdf_expand_label_sha384(&early, b"derived", &[], 48);
+        let early = hkdf_extract_sha384(&[], &[0u8; 48]);
+        let derived = hkdf_expand_label_sha384(&early, b"derived", &EMPTY_HASH_SHA384, 48);
         let handshake = hkdf_extract_sha384(&derived, &pms);
         let traffic = hkdf_expand_label_sha384(&handshake, b"c hs traffic", &transcript, 48);
         assert_eq!(actual.to_vec(), hkdf_expand_label_sha384(&traffic, b"key", &[], 32));

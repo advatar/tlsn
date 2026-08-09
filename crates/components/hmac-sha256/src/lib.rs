@@ -23,7 +23,7 @@ mod tls13;
 
 pub use tls12::Tls12Prf as MpcPrf;
 pub use tls12::{PrfOutput, SessionKeys, Tls12Prf};
-pub use tls13::finished_sha384_from_key;
+pub use tls13::{finished_sha384_from_key, DeferredFinishedSha384};
 pub use tls13::sha384_application::Sha384ApplicationKeys;
 pub use tls13::sha384_compress_circuit_for_generation;
 pub use tls13::aes256_circuit::{

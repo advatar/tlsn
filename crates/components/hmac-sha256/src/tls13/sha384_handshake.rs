@@ -23,8 +23,8 @@ impl Sha384HandshakeTraffic {
         let handshake_secret = HkdfExtract384::alloc(mode, vm, zero_salt, ikm)?;
         let secret: Vector<U8> = handshake_secret.output().into();
         Ok(Self {
-            client: HkdfExpand384::alloc(vm, secret, b"c hs traffic", 48)?,
-            server: HkdfExpand384::alloc(vm, secret, b"s hs traffic", 48)?,
+            client: HkdfExpand384::alloc(vm, secret, b"c hs traffic", 48, 48)?,
+            server: HkdfExpand384::alloc(vm, secret, b"s hs traffic", 48, 48)?,
         })
     }
 

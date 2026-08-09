@@ -144,15 +144,16 @@ pub struct Tls13HandshakeKeys {
     pub server_finished_key: [u8; 32],
 }
 
-/// TLS 1.3 SHA-384 handshake keys retained in MPC form.
+/// TLS 1.3 SHA-384 handshake epochs. Traffic keys are released after the
+/// ServerHello; Finished keys remain secret-shared.
 #[derive(Debug)]
 pub struct Tls13Sha384HandshakeKeys {
     /// Client-to-server write epoch.
-    pub client: WriteEpoch<Array<U8, 32>, Array<U8, 12>>,
+    pub client: WriteEpoch<[u8; 32], [u8; 12]>,
     /// Client Finished key.
     pub client_finished_key: Array<U8, 48>,
     /// Server-to-client read epoch.
-    pub server: ReadEpoch<Array<U8, 32>, Array<U8, 12>>,
+    pub server: ReadEpoch<[u8; 32], [u8; 12]>,
     /// Server Finished key.
     pub server_finished_key: Array<U8, 48>,
 }
@@ -193,6 +194,10 @@ pub(crate) struct Tls13KeyState {
     keys: Tls13SessionKeys,
     /// Shared ECDHE input retained for a later SHA-384 schedule selection.
     sha384_shared_secret: Option<Array<U8, 32>>,
+    sha384_handshake_material: Option<hmac_sha256::Sha384HandshakeKeys>,
+    sha384_application_material: Option<Sha384ApplicationKeys>,
+    sha384_client_finished: Option<hmac_sha256::DeferredFinishedSha384>,
+    sha384_server_finished: Option<hmac_sha256::DeferredFinishedSha384>,
 }
 
 impl Tls13KeyState {
@@ -206,6 +211,10 @@ impl Tls13KeyState {
             inner: Tls13KeySched::new(mode, key_schedule_role),
             keys: Tls13SessionKeys::default(),
             sha384_shared_secret: None,
+            sha384_handshake_material: None,
+            sha384_application_material: None,
+            sha384_client_finished: None,
+            sha384_server_finished: None,
         }
     }
 
@@ -215,7 +224,76 @@ impl Tls13KeyState {
         pms: Array<U8, 32>,
     ) -> Result<(), MpcTlsError> {
         self.sha384_shared_secret = Some(pms);
+        let mut handshake = hmac_sha256::Sha384HandshakeKeys::alloc_from_shared_secret_deferred(
+            hmac_sha256::Mode::Normal,
+            vm,
+            pms,
+        )
+        .map_err(MpcTlsError::from)?;
+        handshake.set_context(vm).map_err(MpcTlsError::from)?;
+        self.sha384_client_finished = Some(
+            hmac_sha256::DeferredFinishedSha384::alloc(
+                vm,
+                handshake.client_finished().map_err(MpcTlsError::from)?,
+            )
+            .map_err(MpcTlsError::from)?,
+        );
+        self.sha384_server_finished = Some(
+            hmac_sha256::DeferredFinishedSha384::alloc(
+                vm,
+                handshake.server_finished().map_err(MpcTlsError::from)?,
+            )
+            .map_err(MpcTlsError::from)?,
+        );
+        let mut application = Sha384ApplicationKeys::alloc_from_shared_secret_deferred(
+            hmac_sha256::Mode::Normal,
+            vm,
+            pms,
+        )
+        .map_err(MpcTlsError::from)?;
+        application.set_context(vm).map_err(MpcTlsError::from)?;
+        self.sha384_handshake_material = Some(handshake);
+        self.sha384_application_material = Some(application);
         self.inner.alloc(vm, pms).map_err(MpcTlsError::from)
+    }
+
+    /// Installs SHA-384 handshake epochs using circuits preallocated before VM
+    /// setup.
+    pub(crate) async fn set_sha384_hello_hash(
+        &mut self,
+        ctx: &mut Context,
+        vm: &mut (dyn VmTrait<Binary> + Send),
+        transcript_hash: [u8; 48],
+    ) -> Result<(), MpcTlsError> {
+        let material = self
+            .sha384_handshake_material
+            .as_mut()
+            .ok_or_else(|| MpcTlsError::state("SHA-384 handshake schedule is not allocated"))?;
+        material
+            .set_transcript(vm, &transcript_hash)
+            .map_err(MpcTlsError::from)?;
+        let mut client_key = vm
+            .decode(material.client_key().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
+        let mut client_iv = vm
+            .decode(material.client_iv().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
+        let mut server_key = vm
+            .decode(material.server_key().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
+        let mut server_iv = vm
+            .decode(material.server_iv().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
+        mpz_vm_core::Execute::execute_all(vm, ctx)
+            .await
+            .map_err(MpcTlsError::hs)?;
+        self.keys.sha384_handshake = Some(Tls13Sha384HandshakeKeys {
+            client: WriteEpoch::new(Epoch::Handshake, 0, client_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake key is unavailable"))?, client_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake IV is unavailable"))?),
+            client_finished_key: material.client_finished().map_err(MpcTlsError::from)?,
+            server: ReadEpoch::new(Epoch::Handshake, 0, server_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake key is unavailable"))?, server_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake IV is unavailable"))?),
+            server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
+        });
+        Ok(())
     }
 
     /// Installs SHA-384 handshake epochs from the retained shared ECDHE input.
@@ -225,52 +303,51 @@ impl Tls13KeyState {
         vm: &mut (dyn VmTrait<Binary> + Send),
         transcript_hash: [u8; 48],
     ) -> Result<(), MpcTlsError> {
-        let shared_secret = self
-            .sha384_shared_secret
-            .ok_or_else(|| MpcTlsError::state("SHA-384 shared secret is not allocated"))?;
-        let mut material = hmac_sha256::Sha384HandshakeKeys::alloc_from_shared_secret(
-            hmac_sha256::Mode::Normal,
-            vm,
-            shared_secret,
-            &transcript_hash,
-        )
-        .map_err(MpcTlsError::from)?;
-        material.set_context(vm).map_err(MpcTlsError::from)?;
+        let application = self
+            .sha384_application_material
+            .as_mut()
+            .ok_or_else(|| MpcTlsError::state("SHA-384 application schedule is not allocated"))?;
+        application
+            .set_transcript(vm, &transcript_hash)
+            .map_err(MpcTlsError::from)?;
         mpz_vm_core::Execute::execute_all(vm, ctx)
             .await
             .map_err(MpcTlsError::hs)?;
-        self.keys.sha384_handshake = Some(Tls13Sha384HandshakeKeys {
-            client: WriteEpoch::new(Epoch::Handshake, 0, material.client_key().map_err(MpcTlsError::from)?, material.client_iv().map_err(MpcTlsError::from)?),
-            client_finished_key: material.client_finished().map_err(MpcTlsError::from)?,
-            server: ReadEpoch::new(Epoch::Handshake, 0, material.server_key().map_err(MpcTlsError::from)?, material.server_iv().map_err(MpcTlsError::from)?),
-            server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
-        });
-        let mut application = hmac_sha256::Sha384ApplicationKeys::alloc_from_shared_secret(
-            hmac_sha256::Mode::Normal,
-            vm,
-            shared_secret,
-            &transcript_hash,
-        )
-        .map_err(MpcTlsError::from)?;
-        application.set_context(vm).map_err(MpcTlsError::from)?;
-        mpz_vm_core::Execute::execute_all(vm, ctx)
-            .await
-            .map_err(MpcTlsError::hs)?;
+        debug!("SHA-384 application schedule execution complete");
+        let client_key = application.client_key().map_err(MpcTlsError::from)?;
+        let client_iv = application.client_iv().map_err(MpcTlsError::from)?;
+        let server_key = application.server_key().map_err(MpcTlsError::from)?;
+        let server_iv = application.server_iv().map_err(MpcTlsError::from)?;
         self.install_sha384_application_keys(
-            application.client_key().map_err(MpcTlsError::from)?,
-            application.client_iv().map_err(MpcTlsError::from)?,
-            application.server_key().map_err(MpcTlsError::from)?,
-            application.server_iv().map_err(MpcTlsError::from)?,
+            client_key,
+            client_iv,
+            server_key,
+            server_iv,
         );
         Ok(())
     }
 
     pub(crate) fn allocated_application_keys(
-        &self,
+        &mut self,
     ) -> Result<hmac_sha256::ApplicationKeys, MpcTlsError> {
         self.inner
             .allocated_application_keys()
             .map_err(MpcTlsError::from)
+    }
+
+    pub(crate) fn allocated_sha384_application_keys(
+        &self,
+    ) -> Result<(Array<U8, 32>, Array<U8, 12>, Array<U8, 32>, Array<U8, 12>), MpcTlsError> {
+        let material = self
+            .sha384_application_material
+            .as_ref()
+            .ok_or_else(|| MpcTlsError::state("SHA-384 application schedule is not allocated"))?;
+        Ok((
+            material.client_key().map_err(MpcTlsError::from)?,
+            material.client_iv().map_err(MpcTlsError::from)?,
+            material.server_key().map_err(MpcTlsError::from)?,
+            material.server_iv().map_err(MpcTlsError::from)?,
+        ))
     }
 
     pub(crate) async fn set_hello_hash(
@@ -369,6 +446,24 @@ impl Tls13KeyState {
         )
         .map_err(MpcTlsError::from)?;
         material.set_context(vm).map_err(MpcTlsError::from)?;
+        self.sha384_client_finished = Some(
+            hmac_sha256::DeferredFinishedSha384::alloc(
+                vm,
+                material.client_finished().map_err(MpcTlsError::from)?,
+            )
+            .map_err(MpcTlsError::from)?,
+        );
+        self.sha384_server_finished = Some(
+            hmac_sha256::DeferredFinishedSha384::alloc(
+                vm,
+                material.server_finished().map_err(MpcTlsError::from)?,
+            )
+            .map_err(MpcTlsError::from)?,
+        );
+        let mut client_key = vm.decode(material.client_key().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
+        let mut client_iv = vm.decode(material.client_iv().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
+        let mut server_key = vm.decode(material.server_key().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
+        let mut server_iv = vm.decode(material.server_iv().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
         mpz_vm_core::Execute::execute_all(vm, ctx)
             .await
             .map_err(MpcTlsError::hs)?;
@@ -376,15 +471,15 @@ impl Tls13KeyState {
             client: WriteEpoch::new(
                 Epoch::Handshake,
                 0,
-                material.client_key().map_err(MpcTlsError::from)?,
-                material.client_iv().map_err(MpcTlsError::from)?,
+                client_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake key is unavailable"))?,
+                client_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake IV is unavailable"))?,
             ),
             client_finished_key: material.client_finished().map_err(MpcTlsError::from)?,
             server: ReadEpoch::new(
                 Epoch::Handshake,
                 0,
-                material.server_key().map_err(MpcTlsError::from)?,
-                material.server_iv().map_err(MpcTlsError::from)?,
+                server_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake key is unavailable"))?,
+                server_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake IV is unavailable"))?,
             ),
             server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
         });
@@ -395,20 +490,22 @@ impl Tls13KeyState {
     /// key; the key itself never leaves the VM.
     #[allow(dead_code)]
     pub(crate) async fn sha384_finished_vd(
-        &self,
+        &mut self,
         ctx: &mut Context,
         vm: &mut (dyn VmTrait<Binary> + Send),
         transcript_hash: [u8; 48],
         server: bool,
     ) -> Result<[u8; 48], MpcTlsError> {
-        let keys = self
-            .keys
-            .sha384_handshake
-            .as_ref()
-            .ok_or_else(|| MpcTlsError::state("SHA-384 handshake keys are not installed"))?;
-        let key = if server { keys.server_finished_key } else { keys.client_finished_key };
-        let output = hmac_sha256::finished_sha384_from_key(vm, key, transcript_hash)
+        let finished = if server {
+            self.sha384_server_finished.as_mut()
+        } else {
+            self.sha384_client_finished.as_mut()
+        }
+        .ok_or_else(|| MpcTlsError::state("SHA-384 Finished circuit is not allocated"))?;
+        finished
+            .set_transcript(vm, transcript_hash)
             .map_err(MpcTlsError::from)?;
+        let output = finished.output();
         let mut decoded = vm.decode(output).map_err(MpcTlsError::hs)?;
         mpz_vm_core::Execute::execute_all(vm, ctx)
             .await
@@ -472,13 +569,13 @@ impl Tls13KeyState {
     ) -> Result<(OpaqueMessage, Record), MpcTlsError> {
         match epoch {
             Epoch::Handshake => {
-                let keys = self
-                    .keys
-                    .handshake
-                    .as_mut()
-                    .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
-
-                encrypt_tls13_record(&mut keys.client, msg)
+                if let Some(keys) = self.keys.handshake.as_mut() {
+                    encrypt_tls13_record(&mut keys.client, msg)
+                } else if let Some(keys) = self.keys.sha384_handshake.as_mut() {
+                    encrypt_tls13_record_256(&mut keys.client, msg)
+                } else {
+                    Err(MpcTlsError::hs("tls13 handshake keys are not available"))
+                }
             }
             Epoch::Application => Err(MpcTlsError::hs(
                 "tls13 application records must use the asynchronous joint AEAD path",
@@ -493,13 +590,13 @@ impl Tls13KeyState {
     ) -> Result<(PlainMessage, Record), MpcTlsError> {
         match epoch {
             Epoch::Handshake => {
-                let keys = self
-                    .keys
-                    .handshake
-                    .as_mut()
-                    .ok_or_else(|| MpcTlsError::hs("tls13 handshake keys are not available"))?;
-
-                decrypt_tls13_record(&mut keys.server, msg)
+                if let Some(keys) = self.keys.handshake.as_mut() {
+                    decrypt_tls13_record(&mut keys.server, msg)
+                } else if let Some(keys) = self.keys.sha384_handshake.as_mut() {
+                    decrypt_tls13_record_256(&mut keys.server, msg)
+                } else {
+                    Err(MpcTlsError::hs("tls13 handshake keys are not available"))
+                }
             }
             Epoch::Application => Err(MpcTlsError::hs(
                 "tls13 application records must use the asynchronous joint AEAD path",
@@ -516,13 +613,15 @@ impl Tls13KeyState {
         plaintext: Option<Vec<u8>>,
         plaintext_len: usize,
     ) -> Result<Option<(OpaqueMessage, Record)>, MpcTlsError> {
-        let epoch = self
-            .keys
-            .application
-            .as_mut()
-            .ok_or_else(|| MpcTlsError::hs("tls13 application write epoch is not available"))?;
-        let sequence = epoch.client.reserve_sequence()?;
-        let iv = epoch.client.iv;
+        let (sequence, iv) = if let Some(epoch) = self.keys.application.as_mut() {
+            (epoch.client.reserve_sequence()?, epoch.client.iv)
+        } else if let Some(epoch) = self.keys.sha384_application.as_mut() {
+            (epoch.client.reserve_sequence()?, epoch.client.iv)
+        } else {
+            return Err(MpcTlsError::hs(
+                "tls13 application write epoch is not available",
+            ));
+        };
         let body_len = plaintext_len
             .checked_add(1)
             .ok_or_else(|| MpcTlsError::hs("tls13 plaintext length overflow"))?;
@@ -569,13 +668,15 @@ impl Tls13KeyState {
         if msg.typ != ContentType::ApplicationData || msg.version != ProtocolVersion::TLSv1_2 {
             return Err(MpcTlsError::hs("unexpected TLS 1.3 record header"));
         }
-        let epoch = self
-            .keys
-            .application
-            .as_mut()
-            .ok_or_else(|| MpcTlsError::hs("tls13 application read epoch is not available"))?;
-        let sequence = epoch.server.reserve_sequence()?;
-        let iv = epoch.server.iv;
+        let (sequence, iv) = if let Some(epoch) = self.keys.application.as_mut() {
+            (epoch.server.reserve_sequence()?, epoch.server.iv)
+        } else if let Some(epoch) = self.keys.sha384_application.as_mut() {
+            (epoch.server.reserve_sequence()?, epoch.server.iv)
+        } else {
+            return Err(MpcTlsError::hs(
+                "tls13 application read epoch is not available",
+            ));
+        };
         let mut ciphertext = msg.payload.0;
         if ciphertext.len() < 16 {
             return Err(MpcTlsError::hs(

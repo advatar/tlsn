@@ -42,7 +42,7 @@ pub(crate) mod sha384_application;
 #[allow(dead_code)]
 mod sha384_finished;
 pub use sha384_circuit::sha384_compress_circuit_for_generation;
-pub use sha384_finished::finished_sha384_from_key;
+pub use sha384_finished::{finished_sha384_from_key, DeferredFinishedSha384};
 pub(crate) mod sha384_handshake_keys;
 pub use sha384_handshake_keys::Sha384HandshakeKeys;
 

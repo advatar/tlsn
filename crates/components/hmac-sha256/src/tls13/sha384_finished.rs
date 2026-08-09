@@ -4,6 +4,47 @@ use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, prelude::{Memor
 use crate::{FError, Mode};
 use super::{hkdf384::HkdfExpand384, hmac384::hmac_sha384_message};
 
+/// SHA-384 Finished MAC with its public transcript input allocated before VM
+/// setup.
+#[derive(Debug)]
+pub struct DeferredFinishedSha384 {
+    transcript: Array<U8, 48>,
+    output: Array<U8, 48>,
+    assigned: bool,
+}
+
+impl DeferredFinishedSha384 {
+    /// Allocates the Finished MAC circuit while leaving its public transcript
+    /// hash unassigned.
+    pub fn alloc(
+        vm: &mut dyn Vm<Binary>,
+        finished_key: Array<U8, 48>,
+    ) -> Result<Self, FError> {
+        let transcript: Array<U8, 48> = vm.alloc().map_err(FError::vm)?;
+        vm.mark_public(transcript).map_err(FError::vm)?;
+        let output = hmac_sha384_message(vm, finished_key.into(), &[transcript.into()])?;
+        Ok(Self { transcript, output, assigned: false })
+    }
+
+    /// Assigns and commits the public transcript hash.
+    pub fn set_transcript(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        transcript_hash: [u8; 48],
+    ) -> Result<(), FError> {
+        if self.assigned {
+            return Err(FError::state("Finished transcript is already assigned"));
+        }
+        vm.assign(self.transcript, transcript_hash).map_err(FError::vm)?;
+        vm.commit(self.transcript).map_err(FError::vm)?;
+        self.assigned = true;
+        Ok(())
+    }
+
+    /// Returns the preallocated Finished output.
+    pub fn output(&self) -> Array<U8, 48> { self.output }
+}
+
 /// Allocates a SHA-384 Finished MAC over a public transcript hash.
 pub(crate) fn finished_sha384(
     _mode: Mode,
@@ -11,7 +52,7 @@ pub(crate) fn finished_sha384(
     traffic_secret: Vector<U8>,
     transcript_hash: Vector<U8>,
 ) -> Result<Array<U8, 48>, FError> {
-    let mut finished = HkdfExpand384::alloc(vm, traffic_secret, b"finished", 48)?;
+    let mut finished = HkdfExpand384::alloc(vm, traffic_secret, b"finished", 48, 0)?;
     finished.set_context(vm, &[])?;
     hmac_sha384_message(vm, finished.output()?.into(), &[transcript_hash])
 }

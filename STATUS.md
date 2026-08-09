@@ -29,15 +29,16 @@
 - [x] Wire SHA-384 Finished computation through MPC-TLS state and verify public 48-byte output jointly.
 - [x] Generalize the inter-party TLS 1.3 handshake-hash message to length-delimited bytes, retaining strict SHA-256 validation until SHA-384 dispatch is enabled.
 - [x] Generalize TLS 1.3 Finished inter-party payloads and add 48-byte leader dispatch to the retained SHA-384 MPC callback.
-- [ ] Integrate SHA-384 HKDF into a full TLS 1.3 key-schedule state machine with 48-byte Finished/transcript state.
+- [x] Integrate SHA-384 HKDF into the full live TLS 1.3 key-schedule state machine with 48-byte Finished/transcript state.
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.
 - [ ] Formally verify SHA-384 circuit/reference equivalence and HMAC/HKDF width/domain invariants.
 - [x] Extend Tamarin/Lean/Kani artifacts with a suite-specific AES-256/SHA-384 symbolic key-schedule boundary.
 - [ ] Extend Lean/Kani artifacts for AES-256 epochs and suite negotiation, and connect the circuit to the concrete state machine.
-- [ ] Re-run adversarial tests and interoperability after enabling any additional TLS 1.3 suite.
+- [x] Re-run unit tests and genuine AES-256 interoperability against nginx, Caddy, and OpenSSL after enabling `TLS_AES_256_GCM_SHA384`.
 - [x] Replace the AES-256 S-box with the shallow Boyar--Peralta circuit and split key expansion from block encryption; circuit/table and NIST-vector tests pass.
-- [ ] Preallocate the SHA-384 live key schedule before VM setup; genuinely advertising AES-256 currently stalls while processing the 48-byte ServerHello transcript hash.
+- [x] Preallocate the SHA-384 live key schedule before VM setup through handshake, Finished, and application traffic-key derivation.
+- [x] Dispatch live application read/write epochs and preallocated record pools by the negotiated AES-128/AES-256 suite; genuine AES-256 application traffic and MPC finalization pass.
 - [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
 - [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.

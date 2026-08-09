@@ -2,7 +2,7 @@
 
 use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, prelude::MemoryExt, Vm};
 use crate::FError;
-use super::hkdf384::HkdfExpand384;
+use super::hkdf384::{HkdfExpand384, EMPTY_HASH_SHA384, zero_hash};
 use super::hkdf_extract384::HkdfExtract384;
 use crate::Mode;
 
@@ -27,16 +27,38 @@ impl Sha384ApplicationKeys {
         transcript_hash: &[u8; 48],
     ) -> Result<Self, crate::FError> {
         let empty = vm.alloc_vec(0).map_err(crate::FError::vm)?;
-        let empty_ikm = vm.alloc_vec(0).map_err(crate::FError::vm)?;
+        let empty_ikm = zero_hash(vm)?;
         let early = HkdfExtract384::alloc(mode, vm, empty, &[empty_ikm])?;
-        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48)?;
-        derived.set_context(vm, &[])?;
+        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48, 48)?;
+        derived.set_context(vm, &EMPTY_HASH_SHA384)?;
         let handshake = HkdfExtract384::alloc(mode, vm, derived.output()?.into(), &[shared_secret.into()])?;
-        let mut handshake_derived = HkdfExpand384::alloc(vm, handshake.output().into(), b"derived", 48)?;
-        handshake_derived.set_context(vm, &[])?;
-        let empty_ikm = vm.alloc_vec(0).map_err(crate::FError::vm)?;
+        let mut handshake_derived = HkdfExpand384::alloc(vm, handshake.output().into(), b"derived", 48, 48)?;
+        handshake_derived.set_context(vm, &EMPTY_HASH_SHA384)?;
+        let empty_ikm = zero_hash(vm)?;
         let master = HkdfExtract384::alloc(mode, vm, handshake_derived.output()?.into(), &[empty_ikm])?;
-        Self::alloc(vm, master.output().into(), transcript_hash)
+        let mut keys = Self::alloc_deferred(vm, master.output().into())?;
+        keys.set_transcript(vm, transcript_hash)?;
+        Ok(keys)
+    }
+
+    /// Preallocates the no-PSK application schedule before the completed
+    /// handshake transcript is available.
+    pub fn alloc_from_shared_secret_deferred(
+        mode: Mode,
+        vm: &mut dyn Vm<Binary>,
+        shared_secret: Array<U8, 32>,
+    ) -> Result<Self, crate::FError> {
+        let empty = vm.alloc_vec(0).map_err(crate::FError::vm)?;
+        let empty_ikm = zero_hash(vm)?;
+        let early = HkdfExtract384::alloc(mode, vm, empty, &[empty_ikm])?;
+        let mut derived = HkdfExpand384::alloc(vm, early.output().into(), b"derived", 48, 48)?;
+        derived.set_context(vm, &EMPTY_HASH_SHA384)?;
+        let handshake = HkdfExtract384::alloc(mode, vm, derived.output()?.into(), &[shared_secret.into()])?;
+        let mut handshake_derived = HkdfExpand384::alloc(vm, handshake.output().into(), b"derived", 48, 48)?;
+        handshake_derived.set_context(vm, &EMPTY_HASH_SHA384)?;
+        let empty_ikm = zero_hash(vm)?;
+        let master = HkdfExtract384::alloc(mode, vm, handshake_derived.output()?.into(), &[empty_ikm])?;
+        Self::alloc_deferred(vm, master.output().into())
     }
 
     /// Allocates application traffic secrets and typed AES-256 key/IV views.
@@ -45,17 +67,34 @@ impl Sha384ApplicationKeys {
         master_secret: Vector<U8>,
         transcript_hash: &[u8; 48],
     ) -> Result<Self, FError> {
-        let client_secret = HkdfExpand384::alloc(vm, master_secret, b"c ap traffic", 48)?;
-        let server_secret = HkdfExpand384::alloc(vm, master_secret, b"s ap traffic", 48)?;
-        let mut client_secret = client_secret;
-        let mut server_secret = server_secret;
-        client_secret.set_context(vm, transcript_hash)?;
-        server_secret.set_context(vm, transcript_hash)?;
-        let client_key = HkdfExpand384::alloc(vm, client_secret.output()?.into(), b"key", 32)?;
-        let client_iv = HkdfExpand384::alloc(vm, client_secret.output()?.into(), b"iv", 12)?;
-        let server_key = HkdfExpand384::alloc(vm, server_secret.output()?.into(), b"key", 32)?;
-        let server_iv = HkdfExpand384::alloc(vm, server_secret.output()?.into(), b"iv", 12)?;
+        let mut keys = Self::alloc_deferred(vm, master_secret)?;
+        keys.set_transcript(vm, transcript_hash)?;
+        Ok(keys)
+    }
+
+    fn alloc_deferred(
+        vm: &mut dyn Vm<Binary>,
+        master_secret: Vector<U8>,
+    ) -> Result<Self, FError> {
+        let client_secret = HkdfExpand384::alloc(vm, master_secret, b"c ap traffic", 48, 48)?;
+        let server_secret = HkdfExpand384::alloc(vm, master_secret, b"s ap traffic", 48, 48)?;
+        let client_key = HkdfExpand384::alloc(vm, client_secret.output()?.into(), b"key", 32, 0)?;
+        let client_iv = HkdfExpand384::alloc(vm, client_secret.output()?.into(), b"iv", 12, 0)?;
+        let server_key = HkdfExpand384::alloc(vm, server_secret.output()?.into(), b"key", 32, 0)?;
+        let server_iv = HkdfExpand384::alloc(vm, server_secret.output()?.into(), b"iv", 12, 0)?;
         Ok(Self { client_secret, server_secret, client_key, client_iv, server_key, server_iv })
+    }
+
+    /// Assigns the completed public handshake transcript to the preallocated
+    /// application traffic-secret expansions.
+    pub fn set_transcript(
+        &mut self,
+        vm: &mut dyn Vm<Binary>,
+        transcript_hash: &[u8; 48],
+    ) -> Result<(), FError> {
+        self.client_secret.set_context(vm, transcript_hash)?;
+        self.server_secret.set_context(vm, transcript_hash)?;
+        Ok(())
     }
 
     /// Completes allocation of the key and IV expansions in the VM.

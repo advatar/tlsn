@@ -19,6 +19,7 @@ pub(crate) enum Message {
     ServerFinishedVd(ServerFinishedVd),
     Tls13HelloHash(Tls13HelloHash),
     Tls13HandshakeHash(Tls13HandshakeHash),
+    Tls13FinishedHash(Tls13FinishedHash),
     Tls13CertVerify(Tls13CertVerify),
     Tls13ClientFinishedVd(Tls13ClientFinishedVd),
     Tls13ServerFinishedVd(Tls13ServerFinishedVd),
@@ -100,8 +101,14 @@ pub(crate) struct Tls13HandshakeHash {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Tls13FinishedHash {
+    pub(crate) handshake_hash: Vec<u8>,
+    pub(crate) server: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13CertVerify {
-    pub(crate) transcript_hash: [u8; 32],
+    pub(crate) transcript_hash: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
