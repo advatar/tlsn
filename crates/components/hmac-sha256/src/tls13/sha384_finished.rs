@@ -1,6 +1,6 @@
 //! Secret-shared SHA-384 TLS 1.3 Finished computation.
 
-use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, Vm};
+use mpz_vm_core::{memory::{binary::{Binary, U8}, Array, Vector}, prelude::{MemoryExt, ViewExt}, Vm};
 use crate::{FError, Mode};
 use super::{hkdf384::HkdfExpand384, hmac384::hmac_sha384_message};
 
@@ -14,6 +14,19 @@ pub(crate) fn finished_sha384(
     let mut finished = HkdfExpand384::alloc(vm, traffic_secret, b"finished", 48)?;
     finished.set_context(vm, &[])?;
     hmac_sha384_message(vm, finished.output()?.into(), &[transcript_hash])
+}
+
+/// Computes SHA-384 Finished verify data from a secret-shared Finished key.
+pub fn finished_sha384_from_key(
+    vm: &mut dyn Vm<Binary>,
+    finished_key: Array<U8, 48>,
+    transcript_hash: [u8; 48],
+) -> Result<Array<U8, 48>, FError> {
+    let transcript = vm.alloc_vec(transcript_hash.len()).map_err(FError::vm)?;
+    vm.mark_public(transcript).map_err(FError::vm)?;
+    vm.assign(transcript, transcript_hash.to_vec()).map_err(FError::vm)?;
+    vm.commit(transcript).map_err(FError::vm)?;
+    hmac_sha384_message(vm, finished_key.into(), &[transcript])
 }
 
 #[cfg(test)]

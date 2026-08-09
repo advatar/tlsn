@@ -144,6 +144,10 @@ MPC-TLS also exposes a SHA-384 handshake epoch slot and executes the same
 allocator for typed handshake keys, IVs, and 48-byte Finished keys. Live
 handshake dispatch remains SHA-256-only until suite selection is wired.
 
+The component now exports VM-native SHA-384 Finished computation from a
+secret-shared 48-byte Finished key and public transcript hash, preserving the
+no-key-decode boundary for the eventual suite callback.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.

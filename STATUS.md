@@ -25,6 +25,7 @@
 - [x] Connect the MPZ SHA-384 application allocator to MPC-TLS epoch installation, with a two-party integration test.
 - [x] Add typed SHA-384 handshake key/IV/Finished material derivation with clear-reference equivalence.
 - [x] Add typed SHA-384 handshake epochs and Finished-key slot to MPC-TLS state, backed by the MPZ allocator.
+- [x] Export VM-native SHA-384 Finished computation from retained secret-shared keys.
 - [ ] Integrate SHA-384 HKDF into a full TLS 1.3 key-schedule state machine with 48-byte Finished/transcript state.
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.

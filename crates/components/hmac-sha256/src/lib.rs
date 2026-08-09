@@ -26,6 +26,7 @@ pub use tls12::{PrfOutput, SessionKeys, Tls12Prf};
 pub use tls13::{ApplicationKeys, HandshakeKeys, Role, Tls13KeySched};
 pub use tls13::sha384_application::Sha384ApplicationKeys;
 pub use tls13::Sha384HandshakeKeys;
+pub use tls13::finished_sha384_from_key;
 
 fn sha256(mut state: [u32; 8], pos: usize, msg: &[u8]) -> [u32; 8] {
     use sha2::{
