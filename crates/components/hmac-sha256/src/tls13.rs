@@ -40,6 +40,8 @@ mod sha384_handshake;
 pub(crate) mod sha384_application;
 #[allow(dead_code)]
 mod sha384_finished;
+#[allow(dead_code)]
+mod sha384_handshake_keys;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]

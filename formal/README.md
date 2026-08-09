@@ -136,6 +136,10 @@ to select this path in a live handshake.
 and Tamarin checks, so the formal gate covers the latest circuit-to-epoch
 feature as an executable refinement check.
 
+The SHA-384 component also derives typed handshake key, IV, and 48-byte
+Finished-key views from the secret-shared handshake secret and transcript;
+these outputs are checked against the clear TLS 1.3 reference.
+
 Four Kani harnesses in `crates/mpc-tls/src/tls13.rs` model-check the actual
 `ReadEpoch::reserve_sequence`, `WriteEpoch::reserve_sequence`, and
 `make_tls13_nonce` implementations for all `u64` sequences and all 96-bit IVs.
