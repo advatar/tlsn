@@ -87,7 +87,7 @@ impl Sha384HandshakeKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{test_utils::mock_vm, tls13::sha384_reference::hkdf_expand_label_sha384};
+    use crate::{test_utils::mock_vm, tls13::sha384_reference::{hkdf_expand_label_sha384, hkdf_extract_sha384}};
     use mpz_common::context::test_st_context;
     use mpz_vm_core::{memory::MemoryExt, prelude::ViewExt, Execute};
 
@@ -126,5 +126,40 @@ mod tests {
         assert_eq!(key.to_vec(), hkdf_expand_label_sha384(&traffic, b"key", &[], 32));
         assert_eq!(iv.to_vec(), hkdf_expand_label_sha384(&traffic, b"iv", &[], 12));
         assert_eq!(finished.to_vec(), hkdf_expand_label_sha384(&traffic, b"finished", &[], 48));
+    }
+
+    #[tokio::test]
+    async fn handshake_schedule_from_shared_secret_matches_tls13_reference() {
+        let pms = [0x21u8; 32];
+        let transcript = [0x42u8; 48];
+        let (mut ctx_a, mut ctx_b) = test_st_context(8);
+        let (mut leader, mut follower) = mock_vm();
+        let run = |vm: &mut (dyn Vm<Binary> + Send)| {
+            let pms_ref = vm.alloc().unwrap();
+            vm.mark_public(pms_ref).unwrap();
+            vm.assign(pms_ref, pms).unwrap();
+            vm.commit(pms_ref).unwrap();
+            let mut keys = Sha384HandshakeKeys::alloc_from_shared_secret(
+                crate::Mode::Normal,
+                vm,
+                pms_ref,
+                &transcript,
+            ).unwrap();
+            keys.set_context(vm).unwrap();
+            vm.decode(keys.client_key().unwrap()).unwrap()
+        };
+        let mut left = run(&mut leader);
+        let mut right = run(&mut follower);
+        tokio::try_join!(
+            async { leader.execute_all(&mut ctx_a).await },
+            async { follower.execute_all(&mut ctx_b).await },
+        ).unwrap();
+        let actual = left.try_recv().unwrap().unwrap();
+        assert_eq!(actual, right.try_recv().unwrap().unwrap());
+        let early = hkdf_extract_sha384(&[], &[]);
+        let derived = hkdf_expand_label_sha384(&early, b"derived", &[], 48);
+        let handshake = hkdf_extract_sha384(&derived, &pms);
+        let traffic = hkdf_expand_label_sha384(&handshake, b"c hs traffic", &transcript, 48);
+        assert_eq!(actual.to_vec(), hkdf_expand_label_sha384(&traffic, b"key", &[], 32));
     }
 }
