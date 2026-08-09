@@ -22,7 +22,10 @@ mod application;
 mod handshake;
 #[allow(dead_code)]
 mod sha384_reference;
+#[allow(dead_code)]
 mod sha384_circuit;
+#[allow(dead_code)]
+mod sha384_vm;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]
