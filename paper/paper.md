@@ -98,6 +98,9 @@ the pinned MPC hash stack currently exposes SHA-256 but not SHA-384. The
 generalization plan, including the required 48-byte transcript/HKDF path and a
 separate ChaCha20-Poly1305 circuit milestone, is documented in
 `docs/research/tls13-cipher-suite-generalization.md`.
+As groundwork, the repository now includes clear SHA-384 HKDF and
+`HkdfLabel` reference functions with tests; these are oracles for a future MPC
+implementation and are not used as a secret-processing fallback.
 
 The prover occupies several adversarial roles simultaneously:
 

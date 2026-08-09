@@ -28,3 +28,8 @@ the transcript hash, Finished key, traffic secret, and labels under SHA-384.
 Until these steps are complete, the rejection in the handshake backend must be
 preserved so an unsupported suite cannot be negotiated into a SHA-256-only
 implementation.
+
+The first groundwork milestone is now present in
+`crates/components/hmac-sha256/src/tls13/sha384_reference.rs`: clear
+SHA-384 HKDF-Extract, HKDF-Expand, and TLS 1.3 label encoding functions. They
+are test-only reference oracles and are not used to process secret MPC state.

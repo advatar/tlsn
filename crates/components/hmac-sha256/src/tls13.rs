@@ -20,6 +20,8 @@ use crate::{
 
 mod application;
 mod handshake;
+#[allow(dead_code)]
+mod sha384_reference;
 
 /// Functionality role.
 #[derive(Debug, Clone, Copy, PartialEq)]
