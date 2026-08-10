@@ -23,6 +23,7 @@ pub(crate) struct VerifyTagData {
     pub(crate) aad: Vec<u8>,
     pub(crate) tag: Vec<u8>,
     pub(crate) release: Option<Vec<u8>>,
+    pub(crate) release_context: Vec<u8>,
 }
 
 #[must_use = "verify tags operation must be awaited"]
@@ -56,12 +57,14 @@ struct ReleaseCapsule {
     commitment: [u8; 32],
 }
 
-fn release_pad(tag_share: &[u8; 16], key_index: usize, len: usize) -> Vec<u8> {
+fn release_pad(tag_share: &[u8; 16], key_index: usize, context: &[u8], len: usize) -> Vec<u8> {
     let mut output = Vec::with_capacity(len);
     for counter in 0u32.. {
         let mut mac = Hmac::<Sha256>::new_from_slice(tag_share).expect("HMAC accepts any key size");
         mac.update(b"tlsn tls13 authenticated release pad");
         mac.update(&(key_index as u64).to_be_bytes());
+        mac.update(&(context.len() as u64).to_be_bytes());
+        mac.update(context);
         mac.update(&counter.to_be_bytes());
         output.extend_from_slice(&mac.finalize().into_bytes());
         if output.len() >= len {
@@ -72,21 +75,33 @@ fn release_pad(tag_share: &[u8; 16], key_index: usize, len: usize) -> Vec<u8> {
     unreachable!("the unbounded counter produces enough output")
 }
 
-fn release_commitment(tag_share: &[u8; 16], key_index: usize, release: &[u8]) -> [u8; 32] {
+fn release_commitment(
+    tag_share: &[u8; 16],
+    key_index: usize,
+    context: &[u8],
+    release: &[u8],
+) -> [u8; 32] {
     let mut mac = Hmac::<Sha256>::new_from_slice(tag_share).expect("HMAC accepts any key size");
     mac.update(b"tlsn tls13 authenticated release commitment");
     mac.update(&(key_index as u64).to_be_bytes());
+    mac.update(&(context.len() as u64).to_be_bytes());
+    mac.update(context);
     mac.update(&(release.len() as u64).to_be_bytes());
     mac.update(release);
     mac.finalize().into_bytes().into()
 }
 
-fn seal_release(tag_share: &[u8; 16], key_index: usize, release: Vec<u8>) -> ReleaseCapsule {
-    let pad = release_pad(tag_share, key_index, release.len());
+fn seal_release(
+    tag_share: &[u8; 16],
+    key_index: usize,
+    context: &[u8],
+    release: Vec<u8>,
+) -> ReleaseCapsule {
+    let pad = release_pad(tag_share, key_index, context, release.len());
     let ciphertext = release.iter().zip(pad).map(|(a, b)| a ^ b).collect();
     ReleaseCapsule {
         ciphertext,
-        commitment: release_commitment(tag_share, key_index, &release),
+        commitment: release_commitment(tag_share, key_index, context, &release),
     }
 }
 
@@ -94,12 +109,14 @@ fn prepare_release_message(
     tag_shares: &[TagShare],
     key_index: usize,
     releases: Vec<Option<Vec<u8>>>,
+    contexts: &[Vec<u8>],
 ) -> (Vec<Option<TagShare>>, Vec<Option<ReleaseCapsule>>) {
     tag_shares
         .iter()
         .zip(releases)
-        .map(|(share, release)| match release {
-            Some(release) => (None, Some(seal_release(&share.0, key_index, release))),
+        .zip(contexts)
+        .map(|((share, release), context)| match release {
+            Some(release) => (None, Some(seal_release(&share.0, key_index, context, release))),
             None => (Some(share.clone()), None),
         })
         .unzip()
@@ -108,16 +125,17 @@ fn prepare_release_message(
 fn open_release(
     expected_tag_share: &[u8; 16],
     key_index: usize,
+    context: &[u8],
     capsule: ReleaseCapsule,
 ) -> Result<Vec<u8>, AeadError> {
-    let pad = release_pad(expected_tag_share, key_index, capsule.ciphertext.len());
+    let pad = release_pad(expected_tag_share, key_index, context, capsule.ciphertext.len());
     let release = capsule
         .ciphertext
         .into_iter()
         .zip(pad)
         .map(|(a, b)| a ^ b)
         .collect::<Vec<_>>();
-    if capsule.commitment != release_commitment(expected_tag_share, key_index, &release) {
+    if capsule.commitment != release_commitment(expected_tag_share, key_index, context, &release) {
         return Err(AeadError::tag("failed to verify tag for release"));
     }
     Ok(release)
@@ -150,6 +168,7 @@ impl Task for VerifyTags {
         let mut tag_shares = Vec::with_capacity(data.len());
         let mut tags = Vec::with_capacity(data.len());
         let mut releases = Vec::with_capacity(data.len());
+        let mut release_contexts = Vec::with_capacity(data.len());
 
         for (mut tag_share, data) in j0_shares.into_iter().zip(data) {
             let ghash_share = ghash
@@ -163,6 +182,7 @@ impl Task for VerifyTags {
             tag_shares.push(TagShare(tag_share));
             tags.push(data.tag);
             releases.push(data.release);
+            release_contexts.push(data.release_context);
         }
 
         let io = ctx.io_mut();
@@ -178,11 +198,12 @@ impl Task for VerifyTags {
                 }
 
                 let mut released = Vec::new();
-                for (((leader_share, follower_share), tag), capsule) in tag_shares
+                for ((((leader_share, follower_share), tag), capsule), context) in tag_shares
                     .into_iter()
                     .zip(peer_tag_shares)
                     .zip(tags)
                     .zip(capsules)
+                    .zip(release_contexts)
                 {
                     let expected_follower_share: [u8; 16] = tag
                         .iter()
@@ -197,7 +218,7 @@ impl Task for VerifyTags {
                                 "follower disclosed a gated TLS 1.3 tag share",
                             ));
                         }
-                        released.push(open_release(&expected_follower_share, key_index, capsule)?);
+                        released.push(open_release(&expected_follower_share, key_index, &context, capsule)?);
                     } else {
                         let follower_share = follower_share
                             .ok_or_else(|| AeadError::tag("follower tag share is missing"))?;
@@ -210,7 +231,7 @@ impl Task for VerifyTags {
             }
             Role::Follower => {
                 let (peer_tag_shares, capsules) =
-                    prepare_release_message(&tag_shares, key_index, releases);
+                    prepare_release_message(&tag_shares, key_index, releases, &release_contexts);
                 io.send((peer_tag_shares, capsules))
                     .await
                     .map_err(AeadError::tag)?;
@@ -233,23 +254,28 @@ mod tests {
     fn authenticated_release_opens_only_with_the_expected_tag_share() {
         let tag_share = [7u8; 16];
         let release = vec![42u8; 97];
-        let capsule = seal_release(&tag_share, 7, release.clone());
-        assert_eq!(open_release(&tag_share, 7, capsule).unwrap(), release);
+        let context = b"session-a/received/0/4";
+        let capsule = seal_release(&tag_share, 7, context, release.clone());
+        assert_eq!(open_release(&tag_share, 7, context, capsule).unwrap(), release);
 
-        let capsule = seal_release(&tag_share, 7, release);
-        assert!(open_release(&tag_share, 8, capsule).is_err());
+        let capsule = seal_release(&tag_share, 7, context, release);
+        assert!(open_release(&tag_share, 8, context, capsule).is_err());
 
-        let capsule = seal_release(&tag_share, 7, vec![42u8; 97]);
+        let capsule = seal_release(&tag_share, 7, context, vec![42u8; 97]);
         let mut wrong_share = tag_share;
         wrong_share[0] ^= 1;
-        assert!(open_release(&wrong_share, 7, capsule).is_err());
+        assert!(open_release(&wrong_share, 7, context, capsule).is_err());
+
+        let capsule = seal_release(&tag_share, 7, context, vec![42u8; 97]);
+        assert!(open_release(&tag_share, 7, b"session-b/received/0/4", capsule).is_err());
     }
 
     #[test]
     fn gated_release_withholds_the_raw_tag_share() {
         let tag_shares = vec![TagShare([7u8; 16]), TagShare([9u8; 16])];
+        let contexts = vec![b"record-0".to_vec(), b"record-1".to_vec()];
         let (peer_tag_shares, capsules) =
-            prepare_release_message(&tag_shares, 7, vec![Some(vec![42u8; 97]), None]);
+            prepare_release_message(&tag_shares, 7, vec![Some(vec![42u8; 97]), None], &contexts);
 
         assert!(peer_tag_shares[0].is_none());
         assert!(capsules[0].is_some());

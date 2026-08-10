@@ -803,6 +803,8 @@ impl Backend for MpcTlsLeader {
         let State::Handshake {
             ctx,
             protocol_version,
+            server_key,
+            record_layer,
             tls13_server_signature,
             tls13_cert_verify_transcript_hash,
             ..
@@ -817,6 +819,17 @@ impl Backend for MpcTlsLeader {
         if protocol_version != &Some(ProtocolVersion::TLSv1_3) {
             return Ok(());
         }
+
+        let server_ephemeral_key = server_key
+            .clone()
+            .ok_or_else(|| MpcTlsError::state("TLS 1.3 server key is not set"))?
+            .try_into()
+            .map_err(MpcTlsError::hs)?;
+        let binding = CertBinding::V1_3(CertBindingV1_3 {
+            server_ephemeral_key,
+            cert_verify_transcript_hash: transcript_hash.clone(),
+        });
+        record_layer.bind_tls13_session(binding.session_id())?;
 
         *tls13_server_signature = Some(ServerSignature {
             alg: tls13_signature_scheme(cert_verify.scheme)?,

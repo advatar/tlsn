@@ -103,9 +103,24 @@ pub(crate) async fn prove<T: Vm<Binary> + Send + Sync>(
     let hash_commitments = if let Some(commit_config) = config.transcript_commit()
         && commit_config.has_hash()
     {
+        let sent_record_ids: Vec<_> = tls_transcript
+            .sent()
+            .iter()
+            .filter(|record| record.typ == ContentType::ApplicationData)
+            .map(|record| record.id.expect("TLS 1.3 records are session-bound"))
+            .collect();
+        let recv_record_ids: Vec<_> = tls_transcript
+            .recv()
+            .iter()
+            .filter(|record| record.typ == ContentType::ApplicationData)
+            .map(|record| record.id.expect("TLS 1.3 records are session-bound"))
+            .collect();
         Some(
             prove_hash(
                 vm,
+                tls_transcript.session_id(),
+                &sent_record_ids,
+                &recv_record_ids,
                 &transcript_refs,
                 commit_config
                     .iter_hash()

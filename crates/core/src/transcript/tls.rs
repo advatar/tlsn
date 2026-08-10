@@ -3,7 +3,7 @@
 use crate::{
     connection::{
         CertBinding, CertBindingV1_2, CertBindingV1_3, ServerEphemKey, ServerSignature, TlsVersion,
-        VerifyData,
+        SessionId, VerifyData,
     },
     transcript::{Direction, Transcript},
     webpki::CertificateDer,
@@ -78,6 +78,19 @@ pub struct Tls13ProofMetadata {
     pub records_authenticated: bool,
 }
 
+/// Globally scoped identity of a TLS record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct RecordId {
+    /// Transcript-derived TLS session identity.
+    pub session_id: SessionId,
+    /// Record direction.
+    pub direction: Direction,
+    /// TLS 1.3 traffic-secret generation.
+    pub generation: u64,
+    /// Record sequence number within the epoch.
+    pub sequence: u64,
+}
+
 impl TlsTranscript {
     /// Creates a new TLS transcript.
     #[allow(clippy::too_many_arguments)]
@@ -89,9 +102,12 @@ impl TlsTranscript {
         certificate_binding: CertBinding,
         tls13_records_authenticated: bool,
         verify_data: VerifyData,
-        sent: Vec<Record>,
-        recv: Vec<Record>,
+        mut sent: Vec<Record>,
+        mut recv: Vec<Record>,
     ) -> Result<Self, TlsTranscriptError> {
+        let session_id = certificate_binding.session_id();
+        bind_record_ids(&mut sent, Direction::Sent, session_id)?;
+        bind_record_ids(&mut recv, Direction::Received, session_id)?;
         let mut sent_iter = sent.iter();
         let mut recv_iter = recv.iter();
         let wire_version = match version {
@@ -287,6 +303,11 @@ impl TlsTranscript {
         &self.certificate_binding
     }
 
+    /// Returns the transcript-derived cryptographic session identity.
+    pub fn session_id(&self) -> SessionId {
+        self.certificate_binding.session_id()
+    }
+
     /// Returns TLS 1.3 proof metadata, if this is a TLS 1.3 transcript.
     pub fn tls13_proof_metadata(&self) -> Option<Tls13ProofMetadata> {
         matches!(self.version, TlsVersion::V1_3).then_some(Tls13ProofMetadata {
@@ -343,6 +364,30 @@ impl TlsTranscript {
 
         Ok(Transcript::new(sent, recv))
     }
+}
+
+fn bind_record_ids(
+    records: &mut [Record],
+    direction: Direction,
+    session_id: SessionId,
+) -> Result<(), TlsTranscriptError> {
+    for record in records {
+        let expected = RecordId {
+            session_id,
+            direction,
+            generation: 0,
+            sequence: record.seq,
+        };
+        if let Some(actual) = record.id {
+            if actual != expected {
+                return Err(TlsTranscriptError::validation(
+                    "TLS record identity does not match its authenticated session",
+                ));
+            }
+        }
+        record.id = Some(expected);
+    }
+    Ok(())
 }
 
 fn validate_tls13_finished<'a>(
@@ -423,6 +468,9 @@ fn validate_tls13_record_types<'a>(
 /// A TLS record.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Record {
+    /// Session-scoped identity. Required for authenticated TLS 1.3 records.
+    #[serde(default)]
+    pub id: Option<RecordId>,
     /// Sequence number.
     pub seq: u64,
     /// Content type.

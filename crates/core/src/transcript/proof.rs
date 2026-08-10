@@ -81,6 +81,8 @@ impl TranscriptProof {
 
         let mut buffer = Vec::new();
         for PlaintextHashSecret {
+            session_id,
+            record_ids,
             direction,
             idx,
             alg,
@@ -111,10 +113,21 @@ impl TranscriptProof {
                 buffer.extend_from_slice(&plaintext[range]);
             }
 
+            let hash = hash_plaintext(
+                hasher,
+                session_id,
+                direction,
+                &idx,
+                &record_ids,
+                &buffer,
+                &blinder,
+            );
             let expected = PlaintextHash {
+                session_id,
+                record_ids,
                 direction,
                 idx,
-                hash: hash_plaintext(hasher, &buffer, &blinder),
+                hash,
             };
 
             if !hash_commitments.contains(&expected) {
@@ -502,6 +515,10 @@ mod tests {
 
     use super::*;
 
+    fn session_id() -> crate::connection::SessionId {
+        crate::connection::SessionId::from_bytes([42; 32])
+    }
+
     #[rstest]
     fn test_reveal_range_out_of_bounds() {
         let transcript = Transcript::new(
@@ -547,12 +564,24 @@ mod tests {
         let hasher = provider.get(&alg).unwrap();
 
         let commitment = PlaintextHash {
+            session_id: session_id(),
+            record_ids: Vec::new(),
             direction,
             idx: idx.clone(),
-            hash: hash_plaintext(hasher, &transcript.sent()[0..10], &blinder),
+            hash: hash_plaintext(
+                hasher,
+                session_id(),
+                direction,
+                &idx,
+                &[],
+                &transcript.sent()[0..10],
+                &blinder,
+            ),
         };
 
         let secret = PlaintextHashSecret {
+            session_id: session_id(),
+            record_ids: Vec::new(),
             direction,
             idx: idx.clone(),
             alg,
@@ -580,6 +609,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transcript_commitment_cannot_transfer_between_sessions() {
+        let provider = HashProvider::default();
+        let transcript = Transcript::new(GET_WITH_HEADER, OK_JSON);
+        let direction = Direction::Sent;
+        let idx = RangeSet::from(0..10);
+        let session_a = crate::connection::SessionId::from_bytes([1; 32]);
+        let session_b = crate::connection::SessionId::from_bytes([2; 32]);
+        let record_a = crate::transcript::RecordId {
+            session_id: session_a,
+            direction,
+            generation: 0,
+            sequence: 4,
+        };
+        let record_b = crate::transcript::RecordId {
+            session_id: session_b,
+            ..record_a
+        };
+        let blinder: Blinder = rand::random();
+        let hasher = provider.get(&HashAlgId::SHA256).unwrap();
+        let commitment = PlaintextHash {
+            session_id: session_a,
+            record_ids: vec![record_a],
+            direction,
+            idx: idx.clone(),
+            hash: hash_plaintext(
+                hasher,
+                session_a,
+                direction,
+                &idx,
+                &[record_a],
+                &transcript.sent()[0..10],
+                &blinder,
+            ),
+        };
+        let secret = PlaintextHashSecret {
+            session_id: session_b,
+            record_ids: vec![record_b],
+            direction,
+            idx: idx.clone(),
+            alg: HashAlgId::SHA256,
+            blinder,
+        };
+        let secrets = vec![TranscriptSecret::Hash(secret)];
+        let mut builder = TranscriptProofBuilder::new(&transcript, &secrets);
+        builder.reveal_sent(&(0..10)).unwrap();
+        let proof = builder.build().unwrap();
+
+        assert!(proof
+            .verify_with_provider(
+                &provider,
+                &transcript.length(),
+                &[TranscriptCommitment::Hash(commitment)],
+            )
+            .is_err());
+    }
+
     #[rstest]
     #[case::sha256(HashAlgId::SHA256)]
     #[case::blake3(HashAlgId::BLAKE3)]
@@ -595,12 +681,24 @@ mod tests {
         let hasher = provider.get(&alg).unwrap();
 
         let commitment = PlaintextHash {
+            session_id: session_id(),
+            record_ids: Vec::new(),
             direction,
             idx: idx.clone(),
-            hash: hash_plaintext(hasher, &transcript.sent()[0..10], &blinder),
+            hash: hash_plaintext(
+                hasher,
+                session_id(),
+                direction,
+                &idx,
+                &[],
+                &transcript.sent()[0..10],
+                &blinder,
+            ),
         };
 
         let secret = PlaintextHashSecret {
+            session_id: session_id(),
+            record_ids: Vec::new(),
             direction,
             idx: idx.clone(),
             alg,
@@ -703,6 +801,8 @@ mod tests {
             let blinder: crate::hash::Blinder = rng.random();
 
             let secret = PlaintextHashSecret {
+                session_id: session_id(),
+                record_ids: Vec::new(),
                 direction: Direction::Received,
                 idx: rangeset.clone(),
                 alg: HashAlgId::BLAKE3,
@@ -773,6 +873,8 @@ mod tests {
         for rangeset in commit_sent_rangesets.iter() {
             let blinder: crate::hash::Blinder = rng.random();
             let secret = PlaintextHashSecret {
+                session_id: session_id(),
+                record_ids: Vec::new(),
                 direction: Direction::Sent,
                 idx: rangeset.clone(),
                 alg: HashAlgId::BLAKE3,
@@ -783,6 +885,8 @@ mod tests {
         for rangeset in commit_recv_rangesets.iter() {
             let blinder: crate::hash::Blinder = rng.random();
             let secret = PlaintextHashSecret {
+                session_id: session_id(),
+                record_ids: Vec::new(),
                 direction: Direction::Received,
                 idx: rangeset.clone(),
                 alg: HashAlgId::BLAKE3,

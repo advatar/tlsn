@@ -35,6 +35,7 @@ fn test_api() {
         connection_info,
         server_cert_data,
     } = ConnectionFixture::tlsnotary(transcript.length());
+    let session_id = server_cert_data.binding.session_id();
 
     let CertBinding::V1_2(CertBindingV1_2 {
         server_ephemeral_key,
@@ -53,18 +54,40 @@ fn test_api() {
     let recv_idx = RangeSet::from(0..recv_len);
 
     let sent_hash_commitment = PlaintextHash {
+        session_id,
+        record_ids: Vec::new(),
         direction: Direction::Sent,
         idx: sent_idx.clone(),
-        hash: hash_plaintext(&hasher, transcript.sent(), &sent_blinder),
+        hash: hash_plaintext(
+            &hasher,
+            session_id,
+            Direction::Sent,
+            &sent_idx,
+            &[],
+            transcript.sent(),
+            &sent_blinder,
+        ),
     };
 
     let recv_hash_commitment = PlaintextHash {
+        session_id,
+        record_ids: Vec::new(),
         direction: Direction::Received,
         idx: recv_idx.clone(),
-        hash: hash_plaintext(&hasher, transcript.received(), &recv_blinder),
+        hash: hash_plaintext(
+            &hasher,
+            session_id,
+            Direction::Received,
+            &recv_idx,
+            &[],
+            transcript.received(),
+            &recv_blinder,
+        ),
     };
 
     let sent_hash_secret = PlaintextHashSecret {
+        session_id,
+        record_ids: Vec::new(),
         direction: Direction::Sent,
         idx: sent_idx,
         alg: HashAlgId::BLAKE3,
@@ -72,6 +95,8 @@ fn test_api() {
     };
 
     let recv_hash_secret = PlaintextHashSecret {
+        session_id,
+        record_ids: Vec::new(),
         direction: Direction::Received,
         idx: recv_idx,
         alg: HashAlgId::BLAKE3,

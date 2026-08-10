@@ -793,6 +793,7 @@ impl MpcAesGcm {
                 aad: data.aad,
                 tag,
                 release: None,
+                release_context: Vec::new(),
             });
         }
 
@@ -809,6 +810,7 @@ impl MpcAesGcm {
         tag: Vec<u8>,
         j0: OneTimePadShared<[u8; 16]>,
         release: Option<Vec<u8>>,
+        release_context: Vec<u8>,
     ) -> Result<VerifyTags, AeadError> {
         let State::Ready { ghash, .. } = &mut self.state else {
             return Err(AeadError::state(
@@ -823,6 +825,7 @@ impl MpcAesGcm {
                 aad,
                 tag,
                 release,
+                release_context,
             }],
             ghash.clone(),
             0,

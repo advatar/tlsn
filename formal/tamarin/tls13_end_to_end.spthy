@@ -1,0 +1,118 @@
+theory Tls13EndToEnd
+begin
+
+/* One model spanning authenticated handshake, Finished, application epoch,
+ * authenticated record release, attestation, and presentation. */
+
+functions:
+  pk/1, sign/2, verify/3,
+  h/1,
+  session_id/3 [private],
+  app_key/2 [private],
+  finished/2 [private],
+  aead/6 [private], tag/6 [private],
+  record_id/4,
+  commit/2,
+  true/0
+
+equations:
+  verify(sign(x, sk), x, pk(sk)) = true
+
+restriction Equality:
+  "All x y #i. Eq(x,y) @ i ==> x = y"
+
+rule InstallServer:
+  [ Fr(~server), Fr(~signing_key) ]
+  --[ ServerInstalled(~server, pk(~signing_key)) ]->
+  [ !Server(~server, ~signing_key) ]
+
+rule AuthenticateHandshake:
+  let certificate_verify = sign(<server, ~transcript>, signing_key)
+      sid = session_id(server, ~transcript, certificate_verify)
+  in
+  [ !Server(server, signing_key), Fr(~transcript) ]
+  --[ HandshakeAuthenticated(server, ~transcript, certificate_verify, sid) ]->
+  [ !Handshake(server, ~transcript, certificate_verify, sid),
+    Out(<server, ~transcript, certificate_verify>) ]
+
+rule AcceptFinished:
+  let verify_data = finished(~handshake_secret, h(transcript))
+  in
+  [ !Handshake(server, transcript, certificate_verify, sid),
+    !Server(server, signing_key),
+    In(<server, transcript, certificate_verify>), Fr(~handshake_secret) ]
+  --[ Eq(verify(certificate_verify, <server, transcript>, pk(signing_key)), true),
+      FinishedAccepted(server, transcript, sid, verify_data) ]->
+  [ !ApplicationEpoch(server, transcript, sid, app_key(~handshake_secret, h(transcript))),
+    Out(verify_data) ]
+
+rule AuthenticateRecord:
+  let direction = 'server'
+      generation = '0'
+      sequence = '0'
+      rid = record_id(sid, direction, generation, sequence)
+      ciphertext = aead(key, direction, generation, sequence, ~aad, ~plaintext)
+      auth_tag = tag(key, direction, generation, sequence, ~aad, ciphertext)
+  in
+  [ !ApplicationEpoch(server, transcript, sid, key),
+    Fr(~plaintext), Fr(~aad) ]
+  --[ RecordAuthenticated(server, transcript, sid, rid, ~aad, ciphertext,
+                          auth_tag, ~plaintext) ]->
+  [ !AuthenticatedRecord(server, transcript, sid, rid, ~aad, ciphertext,
+                          auth_tag, ~plaintext),
+    Out(<sid, rid, ~aad, ciphertext, auth_tag>) ]
+
+rule AuthenticatedRelease:
+  [ !AuthenticatedRecord(server, transcript, sid, rid, aad, ciphertext,
+                          auth_tag, plaintext),
+    In(<sid, rid, aad, ciphertext, auth_tag>) ]
+  --[ PlaintextReleased(server, transcript, sid, rid, plaintext) ]->
+  [ !Released(server, transcript, sid, rid, plaintext),
+    Out(<sid, rid, plaintext>) ]
+
+rule Attest:
+  let commitment = commit(<server, transcript, sid, rid, plaintext>, sid)
+  in
+  [ !Released(server, transcript, sid, rid, plaintext) ]
+  --[ Attested(server, transcript, sid, rid, commitment, plaintext) ]->
+  [ !Attestation(server, transcript, sid, rid, commitment),
+    Out(<server, transcript, sid, rid, commitment>) ]
+
+rule AcceptPresentation:
+  [ !Attestation(server, transcript, sid, rid, commitment),
+    In(<server, transcript, sid, rid, commitment, disclosed>) ]
+  --[ Eq(commit(<server, transcript, sid, rid, disclosed>, sid), commitment),
+      PresentationAccepted(server, transcript, sid, rid, disclosed) ]->
+  [ Out(disclosed) ]
+
+lemma executable:
+  exists-trace
+  "Ex server transcript sid rid plaintext #i.
+     PresentationAccepted(server, transcript, sid, rid, plaintext) @ i"
+
+lemma end_to_end_provenance:
+  "All server transcript sid rid plaintext #i.
+     PresentationAccepted(server, transcript, sid, rid, plaintext) @ i
+     ==> (Ex certificate_verify aad ciphertext auth_tag #h #r #a.
+          HandshakeAuthenticated(server, transcript, certificate_verify, sid) @ h
+        & RecordAuthenticated(server, transcript, sid, rid, aad, ciphertext,
+                              auth_tag, plaintext) @ r
+        & Attested(server, transcript, sid, rid,
+                   commit(<server, transcript, sid, rid, plaintext>, sid), plaintext) @ a
+        & h < r & r < a & a < i)"
+
+lemma presentation_session_is_handshake_derived:
+  "All server transcript sid rid plaintext #i.
+     PresentationAccepted(server, transcript, sid, rid, plaintext) @ i
+     ==> (Ex certificate_verify #h.
+          sid = session_id(server, transcript, certificate_verify)
+        & HandshakeAuthenticated(server, transcript, certificate_verify, sid) @ h
+        & h < i)"
+
+lemma record_id_cannot_transfer_between_sessions:
+  "All server1 transcript1 sid1 server2 transcript2 sid2 rid plaintext #i #j.
+     PresentationAccepted(server1, transcript1, sid1, rid, plaintext) @ i
+   & PresentationAccepted(server2, transcript2, sid2, rid, plaintext) @ j
+   ==> sid1 = sid2"
+
+end

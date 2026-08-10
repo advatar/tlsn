@@ -7,7 +7,8 @@ handshake_proof_output="$(mktemp /tmp/tlsn-tamarin-handshake-proof.XXXXXX)"
 selective_proof_output="$(mktemp /tmp/tlsn-tamarin-selective-proof.XXXXXX)"
 schedule_proof_output="$(mktemp /tmp/tlsn-tamarin-schedule-proof.XXXXXX)"
 aes256_proof_output="$(mktemp /tmp/tlsn-tamarin-aes256-proof.XXXXXX)"
-trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output" "$schedule_proof_output" "$aes256_proof_output"' EXIT
+e2e_proof_output="$(mktemp /tmp/tlsn-tamarin-e2e-proof.XXXXXX)"
+trap 'rm -f "$proof_output" "$handshake_proof_output" "$selective_proof_output" "$schedule_proof_output" "$aes256_proof_output" "$e2e_proof_output"' EXIT
 
 lean formal/lean/Tls13Epoch.lean
 lean formal/lean/Tls13HkdfLabel.lean
@@ -111,3 +112,24 @@ done
 
 printf 'verified %d TLS_AES_256_GCM_SHA384 symbolic lemmas\n' \
   "${#aes256_lemmas[@]}"
+
+tamarin-prover --prove --quiet \
+  formal/tamarin/tls13_end_to_end.spthy \
+  | tee "$e2e_proof_output"
+
+e2e_lemmas=(
+  executable
+  end_to_end_provenance
+  presentation_session_is_handshake_derived
+  record_id_cannot_transfer_between_sessions
+)
+
+for lemma in "${e2e_lemmas[@]}"; do
+  if ! grep -Eq "^[[:space:]]+${lemma} .*: verified" "$e2e_proof_output"; then
+    printf 'required end-to-end Tamarin lemma was not verified: %s\n' "$lemma" >&2
+    exit 1
+  fi
+done
+
+printf 'verified %d end-to-end provenance/session-binding lemmas\n' \
+  "${#e2e_lemmas[@]}"

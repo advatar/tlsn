@@ -42,8 +42,11 @@
 - [x] Replace the AES-256 S-box with the shallow Boyar--Peralta circuit and split key expansion from block encryption; circuit/table and NIST-vector tests pass.
 - [x] Preallocate the SHA-384 live key schedule before VM setup through handshake, Finished, and application traffic-key derivation.
 - [x] Dispatch live application read/write epochs and preallocated record pools by the negotiated AES-128/AES-256 suite; genuine AES-256 application traffic and MPC finalization pass.
-- [ ] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
-- [ ] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
+- [x] Compose handshake, Finished, epoch, record, and disclosure models into an end-to-end provenance theorem.
+  - [x] Add one machine-checked transition system whose provenance theorem spans all five stages without cross-model assumptions.
+- [x] Bind a transcript-derived session identity and `RecordId` through release and presentation for cross-session non-transferability.
+  - [x] Prove symbolic cross-session non-transferability for transcript-derived `SessionId` and full `RecordId`.
+  - [x] Carry the same identifiers through concrete Rust records, authenticated release capsules, commitments, and verification.
 - [x] Add a bounded selective-disclosure leakage-equivalence model.
 - [x] Specify a review-ready computational proof target for the authenticated-release capsule and identify required construction hardening.
 - [x] Add Lean specifications and Kani implementation checks for typed epochs, sequence ownership, exhaustion, and nonce derivation.

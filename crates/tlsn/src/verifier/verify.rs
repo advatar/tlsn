@@ -219,8 +219,27 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
     if let Some(commit_config) = request.transcript_commit()
         && commit_config.has_hash()
     {
+        let sent_record_ids: Vec<_> = tls_transcript
+            .sent()
+            .iter()
+            .filter(|record| record.typ == ContentType::ApplicationData)
+            .map(|record| record.id.expect("TLS 1.3 records are session-bound"))
+            .collect();
+        let recv_record_ids: Vec<_> = tls_transcript
+            .recv()
+            .iter()
+            .filter(|record| record.typ == ContentType::ApplicationData)
+            .map(|record| record.id.expect("TLS 1.3 records are session-bound"))
+            .collect();
         hash_commitments = Some(
-            verify_hash(vm, &transcript_refs, commit_config.iter_hash().cloned()).map_err(|e| {
+            verify_hash(
+                vm,
+                tls_transcript.session_id(),
+                &sent_record_ids,
+                &recv_record_ids,
+                &transcript_refs,
+                commit_config.iter_hash().cloned(),
+            ).map_err(|e| {
                 Error::internal()
                     .with_msg("verification failed during hash commitment setup")
                     .with_source(e)

@@ -693,6 +693,7 @@ impl Tls13KeyState {
         let mut payload = ciphertext.clone();
         payload.extend_from_slice(&tag);
         let record = Record {
+            id: None,
             seq: sequence,
             typ: TranscriptContentType::from(typ),
             plaintext: record_plaintext,
@@ -746,6 +747,7 @@ impl Tls13KeyState {
         };
         let typ = unpad_tls13(&mut plaintext)?;
         let record = Record {
+            id: None,
             seq: sequence,
             typ: TranscriptContentType::from(typ),
             plaintext: Some(plaintext.clone()),
@@ -816,6 +818,7 @@ fn encrypt_tls13_record(
         .encrypt_in_place_detached((&nonce).into(), &aad, &mut payload)
         .map_err(|_| MpcTlsError::hs("tls13 record encryption failed"))?;
     let record = Record {
+        id: None,
         seq,
         typ: TranscriptContentType::from(typ),
         plaintext: Some(plaintext),
@@ -867,6 +870,7 @@ fn decrypt_tls13_record(
     let typ = unpad_tls13(&mut payload)?;
     let plaintext = payload;
     let record = Record {
+        id: None,
         seq,
         typ: TranscriptContentType::from(typ),
         plaintext: Some(plaintext.clone()),
@@ -908,6 +912,7 @@ fn encrypt_tls13_record_256(
         .encrypt_in_place_detached((&nonce).into(), &aad, &mut payload)
         .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm record encryption failed"))?;
     let record = Record {
+        id: None,
         seq,
         typ: TranscriptContentType::from(typ),
         plaintext: Some(plaintext),
@@ -940,7 +945,7 @@ fn decrypt_tls13_record_256(
         .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm record authentication failed"))?;
     let typ = unpad_tls13(&mut payload)?;
     let plaintext = payload;
-    let record = Record { seq, typ: TranscriptContentType::from(typ), plaintext: Some(plaintext.clone()), explicit_nonce: Vec::new(), ciphertext, tag: Some(tag) };
+    let record = Record { id: None, seq, typ: TranscriptContentType::from(typ), plaintext: Some(plaintext.clone()), explicit_nonce: Vec::new(), ciphertext, tag: Some(tag) };
     Ok((PlainMessage { typ, version: ProtocolVersion::TLSv1_3, payload: Payload::new(plaintext) }, record))
 }
 

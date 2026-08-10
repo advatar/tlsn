@@ -11,10 +11,11 @@ use mpz_memory_core::{
 use mpz_vm_core::{Vm, VmError, prelude::*};
 use rangeset::set::RangeSet;
 use tlsn_core::{
+    connection::SessionId,
     hash::{Blinder, Hash, HashAlgId, TypedHash},
     transcript::{
-        Direction,
-        hash::{PlaintextHash, PlaintextHashSecret},
+        Direction, RecordId,
+        hash::{commitment_prefix, PlaintextHash, PlaintextHashSecret},
     },
 };
 
@@ -26,6 +27,8 @@ use crate::{Role, transcript_internal::TranscriptRefs};
 pub(crate) struct HashCommitFuture {
     #[allow(clippy::type_complexity)]
     futs: Vec<(
+        SessionId,
+        Vec<RecordId>,
         Direction,
         RangeSet<usize>,
         HashAlgId,
@@ -38,12 +41,14 @@ impl HashCommitFuture {
     /// ready.
     pub(crate) fn try_recv(self) -> Result<Vec<PlaintextHash>, HashCommitError> {
         let mut output = Vec::new();
-        for (direction, idx, alg, mut fut) in self.futs {
+        for (session_id, record_ids, direction, idx, alg, mut fut) in self.futs {
             let hash = fut
                 .try_recv()
                 .map_err(|_| HashCommitError::decode())?
                 .ok_or_else(HashCommitError::decode)?;
             output.push(PlaintextHash {
+                session_id,
+                record_ids,
                 direction,
                 idx,
                 hash: TypedHash {
@@ -60,13 +65,24 @@ impl HashCommitFuture {
 /// Prove plaintext hash commitments.
 pub(crate) fn prove_hash(
     vm: &mut dyn Vm<Binary>,
+    session_id: SessionId,
+    sent_record_ids: &[RecordId],
+    recv_record_ids: &[RecordId],
     refs: &TranscriptRefs,
     idxs: impl IntoIterator<Item = (Direction, RangeSet<usize>, HashAlgId)>,
 ) -> Result<(HashCommitFuture, Vec<PlaintextHashSecret>), HashCommitError> {
     let mut futs = Vec::new();
     let mut secrets = Vec::new();
     for (direction, idx, alg, hash_ref, blinder_ref) in
-        hash_commit_inner(vm, Role::Prover, refs, idxs)?
+        hash_commit_inner(
+            vm,
+            Role::Prover,
+            session_id,
+            sent_record_ids,
+            recv_record_ids,
+            refs,
+            idxs,
+        )?
     {
         let blinder: Blinder = rand::random();
 
@@ -75,8 +91,14 @@ pub(crate) fn prove_hash(
 
         let hash_fut = vm.decode(Vector::<U8>::from(hash_ref))?;
 
-        futs.push((direction, idx.clone(), alg, hash_fut));
+        let record_ids = match direction {
+            Direction::Sent => sent_record_ids,
+            Direction::Received => recv_record_ids,
+        };
+        futs.push((session_id, record_ids.to_vec(), direction, idx.clone(), alg, hash_fut));
         secrets.push(PlaintextHashSecret {
+            session_id,
+            record_ids: record_ids.to_vec(),
             direction,
             idx,
             blinder,
@@ -90,18 +112,33 @@ pub(crate) fn prove_hash(
 /// Verify plaintext hash commitments.
 pub(crate) fn verify_hash(
     vm: &mut dyn Vm<Binary>,
+    session_id: SessionId,
+    sent_record_ids: &[RecordId],
+    recv_record_ids: &[RecordId],
     refs: &TranscriptRefs,
     idxs: impl IntoIterator<Item = (Direction, RangeSet<usize>, HashAlgId)>,
 ) -> Result<HashCommitFuture, HashCommitError> {
     let mut futs = Vec::new();
     for (direction, idx, alg, hash_ref, blinder_ref) in
-        hash_commit_inner(vm, Role::Verifier, refs, idxs)?
+        hash_commit_inner(
+            vm,
+            Role::Verifier,
+            session_id,
+            sent_record_ids,
+            recv_record_ids,
+            refs,
+            idxs,
+        )?
     {
         vm.commit(blinder_ref)?;
 
         let hash_fut = vm.decode(Vector::<U8>::from(hash_ref))?;
 
-        futs.push((direction, idx, alg, hash_fut));
+        let record_ids = match direction {
+            Direction::Sent => sent_record_ids,
+            Direction::Received => recv_record_ids,
+        };
+        futs.push((session_id, record_ids.to_vec(), direction, idx, alg, hash_fut));
     }
 
     Ok(HashCommitFuture { futs })
@@ -119,6 +156,9 @@ enum Hasher {
 fn hash_commit_inner(
     vm: &mut dyn Vm<Binary>,
     role: Role,
+    session_id: SessionId,
+    sent_record_ids: &[RecordId],
+    recv_record_ids: &[RecordId],
     refs: &TranscriptRefs,
     idxs: impl IntoIterator<Item = (Direction, RangeSet<usize>, HashAlgId)>,
 ) -> Result<
@@ -134,6 +174,15 @@ fn hash_commit_inner(
     let mut output = Vec::new();
     let mut hashers = HashMap::new();
     for (direction, idx, alg) in idxs {
+        let record_ids = match direction {
+            Direction::Sent => sent_record_ids,
+            Direction::Received => recv_record_ids,
+        };
+        let prefix_bytes = commitment_prefix(session_id, direction, &idx, record_ids);
+        let prefix = vm.alloc_vec::<U8>(prefix_bytes.len())?;
+        vm.mark_public(prefix)?;
+        vm.assign(prefix, prefix_bytes)?;
+        vm.commit(prefix)?;
         let blinder = vm.alloc_vec::<U8>(16)?;
         match role {
             Role::Prover => vm.mark_private(blinder)?,
@@ -149,6 +198,8 @@ fn hash_commit_inner(
                     hashers.insert(alg, Hasher::Sha256(hasher.clone()));
                     hasher
                 };
+
+                hasher.update(&prefix);
 
                 let refs = match direction {
                     Direction::Sent => &refs.sent,
@@ -170,6 +221,10 @@ fn hash_commit_inner(
                     hashers.insert(alg, Hasher::Blake3(hasher.clone()));
                     hasher
                 };
+
+                hasher
+                    .update(vm, &prefix)
+                    .map_err(HashCommitError::hasher)?;
 
                 let refs = match direction {
                     Direction::Sent => &refs.sent,
@@ -195,6 +250,10 @@ fn hash_commit_inner(
                     hashers.insert(alg, Hasher::Keccak256(hasher.clone()));
                     hasher
                 };
+
+                hasher
+                    .update(vm, &prefix)
+                    .map_err(HashCommitError::hasher)?;
 
                 let refs = match direction {
                     Direction::Sent => &refs.sent,

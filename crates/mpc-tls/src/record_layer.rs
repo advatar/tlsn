@@ -21,7 +21,10 @@ use tls_core::{
     cipher::make_tls12_aad,
     msgs::enums::{ContentType, ProtocolVersion},
 };
-use tlsn_core::transcript::Record;
+use tlsn_core::{
+    connection::SessionId,
+    transcript::{Direction, Record, RecordId},
+};
 use tokio::sync::Mutex;
 use tracing::{debug, instrument};
 
@@ -108,6 +111,7 @@ pub(crate) struct RecordLayer {
     max_sent_records: usize,
     max_recv_records: usize,
     tls13_aes256: bool,
+    tls13_session_id: Option<SessionId>,
 
     encrypt_buffer: Vec<EncryptOp>,
     decrypt_buffer: Vec<DecryptOp>,
@@ -136,6 +140,7 @@ impl RecordLayer {
             max_sent_records: 0,
             max_recv_records: 0,
             tls13_aes256: false,
+            tls13_session_id: None,
             encrypt_buffer: Vec::new(),
             decrypt_buffer: Vec::new(),
             encrypted_buffer: VecDeque::new(),
@@ -340,6 +345,39 @@ impl RecordLayer {
         self.setup_inner(ctx, true).await
     }
 
+    pub(crate) fn bind_tls13_session(&mut self, session_id: SessionId) -> Result<(), MpcTlsError> {
+        match self.tls13_session_id {
+            Some(current) if current != session_id => Err(MpcTlsError::state(
+                "TLS 1.3 record layer was rebound to a different session",
+            )),
+            _ => {
+                self.tls13_session_id = Some(session_id);
+                Ok(())
+            }
+        }
+    }
+
+    fn release_context(&self, direction: Direction, sequence: u64) -> Result<Vec<u8>, MpcTlsError> {
+        let id = RecordId {
+            session_id: self
+                .tls13_session_id
+                .ok_or_else(|| MpcTlsError::state("TLS 1.3 session identity is not bound"))?,
+            direction,
+            generation: 0,
+            sequence,
+        };
+        let mut context = Vec::with_capacity(64);
+        context.extend_from_slice(b"tlsn/tls13/release/v1\0");
+        context.extend_from_slice(id.session_id.as_bytes());
+        context.push(match id.direction {
+            Direction::Sent => 0,
+            Direction::Received => 1,
+        });
+        context.extend_from_slice(&id.generation.to_be_bytes());
+        context.extend_from_slice(&id.sequence.to_be_bytes());
+        Ok(context)
+    }
+
     async fn setup_inner(&mut self, ctx: &mut Context, tls13: bool) -> Result<(), MpcTlsError> {
         let mut encrypt = self
             .encrypter
@@ -464,11 +502,12 @@ impl RecordLayer {
         ctx: &mut Context,
         vm: Vm,
         _iv: Array<U8, 12>,
-        _sequence: u64,
+        sequence: u64,
         ciphertext: Vec<u8>,
         aad: Vec<u8>,
         tag: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, MpcTlsError> {
+        let release_context = self.release_context(Direction::Received, sequence)?;
         let mut vm = vm
             .try_lock_owned()
             .map_err(|_| MpcTlsError::record_layer("VM lock is held"))?;
@@ -501,6 +540,7 @@ impl RecordLayer {
                 tag,
                 j0,
                 (self.role == Role::Follower).then(|| local_otp.clone()),
+                release_context,
             )
             .map_err(MpcTlsError::record_layer)?;
 
@@ -783,6 +823,7 @@ impl RecordLayer {
             });
 
             sent_records.push(Record {
+                id: None,
                 seq: op.seq,
                 typ: op.typ.into(),
                 plaintext: op.plaintext,
@@ -801,6 +842,7 @@ impl RecordLayer {
             });
 
             recv_records.push(Record {
+                id: None,
                 seq: op.seq,
                 typ: op.typ.into(),
                 plaintext,
@@ -874,6 +916,7 @@ impl RecordLayer {
             });
 
             recv_records.push(Record {
+                id: None,
                 seq: op.seq,
                 typ: op.typ.into(),
                 plaintext,

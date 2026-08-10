@@ -4,6 +4,7 @@ use std::fmt;
 
 use rustls_pki_types as webpki_types;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tls_core::msgs::{codec::Codec, enums::NamedGroup, handshake::ServerECDHParams};
 
 use crate::webpki::{CertificateDer, ServerCertVerifier, ServerCertVerifierError};
@@ -291,6 +292,49 @@ pub enum CertBinding {
     V1_2(CertBindingV1_2),
     /// TLS 1.3 certificate binding.
     V1_3(CertBindingV1_3),
+}
+
+/// A cryptographic TLS session identifier derived from the server-authenticated
+/// handshake binding. It is independent of application-assigned session names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SessionId([u8; 32]);
+
+impl SessionId {
+    /// Creates an identifier from an already authenticated digest.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the identifier bytes.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}
+
+impl CertBinding {
+    /// Derives a domain-separated identifier from the authenticated handshake
+    /// fields. Length prefixes make the encoding injective at field boundaries.
+    pub fn session_id(&self) -> SessionId {
+        let mut hasher = Sha256::new();
+        hasher.update(b"tlsn/session-id/v1\0");
+        match self {
+            CertBinding::V1_2(binding) => {
+                hasher.update([0x12]);
+                hasher.update(binding.client_random);
+                hasher.update(binding.server_random);
+                hasher.update((binding.server_ephemeral_key.key.len() as u32).to_be_bytes());
+                hasher.update(&binding.server_ephemeral_key.key);
+            }
+            CertBinding::V1_3(binding) => {
+                hasher.update([0x13]);
+                hasher.update((binding.cert_verify_transcript_hash.len() as u16).to_be_bytes());
+                hasher.update(&binding.cert_verify_transcript_hash);
+                hasher.update((binding.server_ephemeral_key.key.len() as u32).to_be_bytes());
+                hasher.update(&binding.server_ephemeral_key.key);
+            }
+        }
+        SessionId(hasher.finalize().into())
+    }
 }
 
 /// Verify data from the TLS handshake finished messages.
@@ -724,5 +768,25 @@ mod tests {
             err.unwrap_err(),
             HandshakeVerificationError::MissingCerts
         ));
+    }
+
+    #[test]
+    fn tls13_session_id_is_stable_and_transcript_bound() {
+        let key = ServerEphemKey {
+            typ: KeyType::SECP256R1,
+            key: vec![4; 65],
+        };
+        let binding = CertBinding::V1_3(CertBindingV1_3 {
+            server_ephemeral_key: key.clone(),
+            cert_verify_transcript_hash: vec![7; 48],
+        });
+        let same = binding.clone();
+        let different = CertBinding::V1_3(CertBindingV1_3 {
+            server_ephemeral_key: key,
+            cert_verify_transcript_hash: vec![8; 48],
+        });
+
+        assert_eq!(binding.session_id(), same.session_id());
+        assert_ne!(binding.session_id(), different.session_id());
     }
 }

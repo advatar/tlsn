@@ -116,6 +116,7 @@ impl TranscriptGenerator {
         let tag = ciphertext.split_off(ciphertext.len() - 16);
 
         Record {
+            id: None,
             seq,
             typ: ContentType::ApplicationData,
             plaintext: Some(plaintext.to_vec()),
@@ -151,6 +152,7 @@ impl TranscriptGenerator {
         let tag = ciphertext.split_off(ciphertext.len() - 16);
 
         Record {
+            id: None,
             seq,
             typ: ContentType::Handshake,
             plaintext: Some(plaintext),
