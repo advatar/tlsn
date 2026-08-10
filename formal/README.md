@@ -40,8 +40,10 @@ models certificate signing, `CertificateVerify` transcript binding, application
 epoch installation, record commitments, and presentation acceptance. It does
 not yet model the concrete TLS 1.3 HKDF transcript or selective-disclosure
 observational equivalence; those boundaries are covered by the dedicated
-key-schedule and selective-disclosure theories below. Concrete Rust
-HKDF/parser refinement remains open.
+key-schedule and selective-disclosure theories below. The concrete refinement
+layer retains the exact encoded Rust handshake transcript and has both MPC
+parties recompute every TLS 1.3 callback hash under the explicitly negotiated
+suite profile before accepting it.
 
 `tamarin/tls13_selective_disclosure.spthy` is a minimal observational-
 equivalence model for selective disclosure: the two diff branches share the
@@ -57,8 +59,9 @@ implementation.
 `tamarin/tls13_aes256_sha384.spthy` covers the suite-specific SHA-384/AES-256
 boundary: SHA-384 Finished acceptance, the ordering constraint before AES-256
 application-secret installation, and transcript-context binding. These are
-symbolic transition-system properties; they do not enable AES-256 negotiation
-in the production backend or prove the MPZ circuit refines the model.
+symbolic transition-system properties. Production negotiation dispatches both
+`TLS_AES_128_GCM_SHA256` and `TLS_AES_256_GCM_SHA384` into their typed key
+schedules and record epochs.
 
 The reproduction wrapper checks five additional lemmas from this model:
 handshake executability and agreement, application-epoch agreement,
@@ -94,18 +97,20 @@ prefix structure used by the Rust encoder. It intentionally does not claim
 cryptographic HMAC correctness.
 
 `lean/Tls13Sha384.lean` checks the SHA-384/AES-256 width domain: 48-byte
-hashes, 32-byte traffic keys, 12-byte IVs, 16-byte GCM tags, and fixed TLS
-label overhead. It is executed by `formal/verify.sh`.
+hashes, 32-byte traffic keys, 12-byte IVs, 16-byte GCM tags, fixed TLS label
+overhead, HMAC/HKDF output widths, and injective key-schedule domain labels.
+It is executed by `formal/verify.sh`.
 
 The SHA-384 implementation also includes a secret-shared HKDF-Extract
 primitive accepting multiple IKM vectors (needed for hybrid key exchange),
-with equivalence coverage against the clear HMAC-SHA384 reference. Full
-SHA-384 TLS 1.3 application-key and Finished-state integration remains open.
+with equivalence coverage against the clear HMAC-SHA384 reference. SHA-384
+handshake keys, Finished, application keys, and live record epochs are wired
+through the negotiated production path.
 
 The application derivation path now produces typed secret-shared 32-byte key
 and 12-byte IV views from SHA-384 traffic secrets; its two-party outputs are
-checked against the clear TLS 1.3 reference. Finished-state integration and
-record-layer wiring are still open.
+checked against the clear TLS 1.3 reference and consumed by the AES-256 record
+layer.
 
 Secret-shared SHA-384 Finished MAC computation is covered by a two-party
 reference test. The Tamarin AES-256/SHA-384 model checks its symbolic ordering
@@ -115,22 +120,21 @@ open.
 The circuit evidence includes multi-block streaming SHA-384 and HMAC-SHA384
 reference tests, in addition to the TLS-sized one-block derivation tests.
 
-The MPC-TLS record module now has a tested AES-256-GCM TLS 1.3 round-trip
-helper over typed 32-byte key epochs. Suite negotiation and secret-shared key
-installation are intentionally still separate pending integration work.
+The MPC-TLS record module has a tested AES-256-GCM TLS 1.3 round-trip path over
+typed 32-byte key epochs. Negotiation and secret-shared key installation select
+that path for `TLS_AES_256_GCM_SHA384`.
 
 `tlsn-hmac-sha256` now exports the typed SHA-384 application-key material
 allocator so the MPC-TLS state machine can consume the same circuit-backed
 views directly; no cleartext key fallback is introduced.
 
-MPC-TLS now has a separate typed SHA-384/AES-256 application epoch slot. It is
-not populated by the legacy SHA-256 handshake path; suite dispatch remains an
-explicit pending integration step.
+MPC-TLS has separate typed SHA-256/AES-128 and SHA-384/AES-256 application
+epoch slots; the negotiated suite selects exactly one width profile.
 
 The MPC-TLS key state now executes the exported SHA-384 allocator in both
 parties and installs the resulting typed epochs; the integration test checks
-epoch ownership after joint VM execution. It still requires suite negotiation
-to select this path in a live handshake.
+epoch ownership after joint VM execution and live negotiation selects this
+path for AES-256 peers.
 
 `formal/verify.sh` runs this integration test in addition to the Lean, Kani,
 and Tamarin checks, so the formal gate covers the latest circuit-to-epoch
@@ -146,7 +150,7 @@ these outputs are checked against the clear TLS 1.3 reference.
 
 MPC-TLS also exposes a SHA-384 handshake epoch slot and executes the same
 allocator for typed handshake keys, IVs, and 48-byte Finished keys. Live
-handshake dispatch remains SHA-256-only until suite selection is wired.
+handshake dispatch is selected from the negotiated suite profile.
 
 The component now exports VM-native SHA-384 Finished computation from a
 secret-shared 48-byte Finished key and public transcript hash, preserving the
@@ -163,11 +167,19 @@ They prove successful advancement, generation preservation, exhaustion without
 wrap, and fixed-IV nonce injectivity. Kani verifies these isolated functions;
 it does not establish whole-program refinement or concurrency properties.
 
-The inter-party handshake-hash transport now carries length-delimited bytes,
-so it can represent SHA-384 transcripts; the legacy receiver still rejects
-non-32-byte hashes until suite dispatch is enabled.
+The inter-party handshake-hash transport carries length-delimited bytes and
+the exact encoded transcript. Both parties independently recompute SHA-256 or
+SHA-384 according to the negotiated profile and reject width or digest
+confusion.
 
 Finished verify-data messages are likewise length-delimited, and leader
-dispatch now routes 48-byte transcript hashes to the SHA-384 MPC callback;
-negotiation remains disabled until the preceding SHA-384 key installation is
-selected by the handshake.
+dispatch routes 48-byte transcript hashes to the SHA-384 MPC callback after
+the exact transcript has been independently checked.
+
+The SHA-384 compression circuit is generated by the same generic primitive,
+message-schedule, and 80-round functions used by its verification
+instantiations. Kani proves the Boolean formulas for wrapping addition,
+choice, majority, and all four sigma functions for arbitrary 64-bit inputs,
+then proves the shared compression wiring equal to `sha2::compress512` for an
+arbitrary 1024-bit block and arbitrary 512-bit chaining state. MPZ's primitive
+gate semantics remain part of the implementation trusted base.

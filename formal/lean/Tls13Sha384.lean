@@ -71,7 +71,7 @@ theorem aes256_epoch_preserves_suite_widths (epoch : Aes256Epoch) :
 structure Sha384Digest where
   bytes : Vector UInt8 48
 
-def hmacSha384 (_key message : List UInt8) : Sha384Digest :=
+def hmacSha384 (_key _message : List UInt8) : Sha384Digest :=
   ⟨Vector.replicate 48 0⟩
 
 def hkdfExtractSha384 (salt ikm : List UInt8) : Sha384Digest :=

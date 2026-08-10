@@ -7,15 +7,16 @@ a whole-program theorem.
 | Symbolic term/property | Concrete implementation evidence | Remaining refinement obligation |
 | --- | --- | --- |
 | `hkdf_extract(salt, ikm)` | `crates/components/hmac-sha256/src/kdf/extract.rs` and its MPC tests | Prove the two-party circuit computes the same byte function for every allowed input and preserves secrecy |
-| `hkdf_expand_label(secret, label, context)` | `kdf/expand.rs`, `kdf/expand/label.rs`, RFC-derived vectors | Prove label encoding bounds, transcript-context wiring, and circuit/reference equivalence compositionally |
-| `finished_mac(finished_key, transcript_hash)` | TLS 1.3 handshake functionality and HMAC tests | Prove parser state and Finished acceptance implement the symbolic event ordering |
-| `ApplicationSecretInstalled` after Finished | `mpc-tls` handshake/application transition tests | Prove no alternate Rust state transition can install application traffic keys |
+| `hkdf_expand_label(secret, label, context)` | RFC-byte Kani harnesses, Lean framing proof, negotiated transcript validation, MPC/reference tests | Whole-program secrecy/noninterference of the MPC execution |
+| `finished_mac(finished_key, transcript_hash)` | Exact Rust transcript retention, independent leader/follower digest recomputation, typed Finished callbacks | X.509/parser correctness beyond the callback boundary |
+| `ApplicationSecretInstalled` after Finished | Typed Rust state transition, unified Tamarin provenance theorem, integration tests | Whole-program control-flow refinement including crashes/concurrency |
 | Secret `traffic_secret` and application keys | MPZ VM references and secret-shared key allocation | Prove noninterference/no-clear decode over all reachable execution traces |
 | `encrypt_handshake`/record AEAD abstraction | Joint AES-GCM/GHASH tests and interop matrix | Prove concrete circuit semantics and capsule composition match the abstract authenticated-release model |
-| Presented disclosure projection | Existing disclosure/attestation APIs and minimal Tamarin diff model | Define the production leakage function and prove serialization/refinement equivalence |
+| Presented disclosure projection | Session-bound `RecordId`, concrete commitments/capsules, unified Tamarin theorem, bounded diff model | Full malicious-verifier privacy and production serialization noninterference |
 
-The existing evidence is deliberately mixed: Tamarin proves properties of the
-symbolic transition systems; Lean and Kani prove local state/nonce facts; Rust
-tests check selected reference vectors and executions. A future end-to-end
-refinement proof must connect these layers without adding an unstated trusted
-assumption.
+The evidence is deliberately layered: Tamarin proves symbolic transition
+properties and end-to-end provenance; Lean proves structural invariants; Kani
+proves concrete Rust width, nonce, HKDF-label, SHA-384 primitive, and
+compression-refinement properties; Rust tests and interop exercise joint MPC
+executions. This is not a proof of malicious security for the complete MPZ
+runtime, X.509 stack, serialization, scheduler, or operating environment.

@@ -21,9 +21,12 @@ abstract: |
   nonce invariants, and Kani checks the corresponding Rust functions over all
   64-bit sequences and 96-bit IVs. The analysis also identifies a limitation:
   authenticated plaintext release does not by itself imply equality with the
-  tag submitted to the verifier. Concrete HKDF/parser refinement, MPC-
-  composition, and implementation-refinement proofs remain open; consequently
-  we do not claim a fully formally verified implementation.
+  tag submitted to the verifier. A unified transition system proves provenance
+  from negotiated handshake through presentation, while concrete refinement
+  retains and independently rehashes the Rust transcript and proves SHA-384
+  circuit equivalence compositionally. Malicious-runtime, side-channel, and
+  full computational MPC security remain outside the claim; consequently we
+  do not claim a fully verified deployed system.
 geometry: margin=1in
 fontsize: 10pt
 link-citations: true
@@ -45,7 +48,7 @@ changes [@rfc8446]. In a notarization protocol, revealing the complete server
 application key to the prover destroys provenance: the prover could generate
 arbitrary ciphertext/tag pairs that appear to originate at the server.
 
-This work makes four contributions:
+This work makes five contributions:
 
 1. A bounded joint AES-GCM application-record design that retains application
    keys and IVs as secret-shared MPC values.
@@ -53,8 +56,10 @@ This work makes four contributions:
    mask unless the prover can reconstruct the verifier's GCM tag share.
 3. Reproducible Tamarin, Lean, and Kani artifacts with explicitly separated
    theorem boundaries.
-4. An empirical TLS 1.3 interoperability evaluation and an analysis of proof
-   gaps that remain before a full formal-verification claim is warranted.
+4. Concrete transcript, suite-width, and SHA-384 circuit refinement proofs
+   tied to the Rust implementation.
+5. An empirical TLS 1.3 interoperability evaluation and an analysis of proof
+   boundaries outside the verified implementation core.
 
 # Background and related work
 
@@ -87,26 +92,24 @@ collude, the server application key is uncompromised, randomness is fresh, and
 the invoked MPC and AEAD functionalities are ideal. A separate malicious-
 verifier confidentiality theorem is future work.
 
-The evaluated profile is TLS 1.3 with
-`TLS_AES_128_GCM_SHA256`, server authentication, bounded application records,
+The evaluated profiles are TLS 1.3 with `TLS_AES_128_GCM_SHA256` or
+`TLS_AES_256_GCM_SHA384`, server authentication, bounded application records,
 and no 0-RTT, resumption, or `KeyUpdate` claim. Denial of service and side
-channels are outside the initial theorem boundary.
+channels are outside the theorem boundary.
 
 The suite restriction remains a deliberate fail-closed capability boundary:
-the production backend still rejects other TLS 1.3 suites before live key
-installation. Since the initial analysis, the repository has supplied the
-missing MPZ SHA-384 compression circuit and integrated secret-shared
-SHA-384/HMAC/HKDF, typed handshake/application key material, and 48-byte
-Finished computation. These additions are reference-tested and formally
-gated, but do not by themselves establish live suite negotiation.
+the production backend accepts the two AES-GCM suites above and rejects other
+TLS 1.3 suites before live key installation. The repository supplies the MPZ
+SHA-384 compression circuit and integrates secret-shared SHA-384/HMAC/HKDF,
+typed handshake/application material, 48-byte Finished, and live AES-256
+read/write record epochs.
 The remaining generalization plan, including ChaCha20-Poly1305, is documented
 in `docs/research/tls13-cipher-suite-generalization.md`.
 The formal suite boundary also includes a separate Tamarin model for
 `TLS_AES_256_GCM_SHA384`: three lemmas verify SHA-384 Finished acceptance,
 Finished-before-application-secret ordering, and transcript-context binding.
-This is symbolic evidence only; AES-256 negotiation remains disabled in the
-production backend until the concrete suite dispatch and callback plumbing are
-integrated.
+Concrete suite dispatch is additionally checked by Kani width-profile
+harnesses and genuine AES-256 interoperability tests.
 
 The prover occupies several adversarial roles simultaneously:
 
@@ -146,11 +149,11 @@ only the authentic candidate opens and validates the capsule under the stated
 PRF and share-uniformity assumptions. The detailed game sequence and proposed
 hardening are maintained in the accompanying computational-proof artifact.
 
-Every record is identified conceptually by
-`RecordId = (session_id, direction, generation, sequence)`. The current local
-epoch proofs establish uniqueness of the directional generation/sequence pair;
-binding this identifier through MPC allocation, release derivation,
-commitments, and presentation is an explicit refinement obligation.
+Every record is identified by
+`RecordId = (session_id, direction, generation, sequence)`. The session is
+derived from the authenticated handshake context. The identifier is carried
+through MPC allocation, release derivation, commitments, and presentation; the
+unified Tamarin model proves that it cannot transfer between sessions.
 
 ## Concrete implementation
 
@@ -163,7 +166,7 @@ the MPZ VM; it does not receive a decoded application key.
 
 ### Handshake and key schedule
 
-For the evaluated SHA-256 profile, `Tls13KeySched` follows the TLS 1.3 stages:
+For both negotiated profiles, the key-schedule state follows the TLS 1.3 stages:
 
 1. the key-exchange component produces the pre-master secret;
 2. `HandshakeSecrets` computes the handshake secret and the client/server
@@ -174,11 +177,10 @@ For the evaluated SHA-256 profile, `Tls13KeySched` follows the TLS 1.3 stages:
 5. the final transcript hash drives the client/server application traffic
    secrets and their `key` and `iv` labels.
 
-The schedule is stateful. Invalid transitions, repeated hash installation, and
-sequence exhaustion return errors. The application key outputs are retained as
-typed MPZ `Array<U8, 16>` and `Array<U8, 12>` views. The leader may learn the
-legacy handshake keys for the currently evaluated AES-128 handshake boundary,
-but application keys remain VM references and are not decoded.
+The schedule is stateful. Invalid transitions, repeated hash installation,
+suite/hash-width confusion, and sequence exhaustion return errors. Application
+keys are retained as typed 16- or 32-byte MPZ views with 12-byte IV views; they
+remain VM references and are not decoded.
 
 ### The SHA-384 circuit added for AES-256 work
 
@@ -207,24 +209,30 @@ application material, and Finished output. These tests execute both MPZ
 parties and compare the result with `sha2`, `hmac`, and clear TLS 1.3 oracle
 functions.
 
+For formal refinement, the generated circuit and its verification
+instantiations share the same generic Boolean primitives, message schedule,
+and 80-round compression function. Kani proves wrapping addition, `Ch`, `Maj`,
+and all sigma functions for arbitrary 64-bit inputs, then proves the shared
+compression function equal to `sha2::compress512` for every block and chaining
+state. SHA-384 uses that compression function with its specified initial value
+and six-word output truncation.
+
 ### Epochs, records, and release
 
 `WriteEpoch<K, I>` and `ReadEpoch<K, I>` own the traffic key, IV, generation,
 and next sequence number. Reservation occurs immediately before encryption or
 authentication, including failed authentication attempts. The nonce helper
 XORs the big-endian sequence into the low 64 bits of the 96-bit IV. The
-production AES-128 path uses the existing joint GCM record implementation and
-the authenticated-release capsule. A separately tested AES-256-GCM path uses
-the same AAD, padding, sequence, and nonce rules with a 32-byte key; it is
-currently an integration path, not a negotiated production suite.
+AES-128 and AES-256 use the joint GCM record implementation and authenticated-
+release capsule with the same AAD, padding, sequence, and nonce rules.
 
 The SHA-384 work is connected to MPC-TLS through typed handshake and
 application epoch slots. Both parties execute the allocator, and the state
 level Finished callback decodes only the resulting public 48-byte verify data.
-Inter-party transcript and Finished messages are length-delimited so they can
-carry SHA-384 values. The live handshake still rejects
-`TLS_AES_256_GCM_SHA384` until suite selection, 48-byte transcript callbacks,
-and the AES-256 record-layer dispatch are enabled together.
+Inter-party transcript and Finished messages carry length-delimited digests and
+the exact encoded transcript. Leader and follower independently recompute each
+callback digest under the negotiated profile before accepting it. Live suite
+selection dispatches 48-byte callbacks and AES-256 record epochs together.
 
 # Formal analysis
 
@@ -290,7 +298,7 @@ SHA-384 Finished event precedes acceptance and application-secret installation,
 and that the installed application context is bound to the SHA-384 transcript.
 It intentionally remains separate from the current SHA-256 production path.
 
-## Open composition theorem
+## End-to-end composition theorem
 
 The intended end-to-end theorem is:
 
@@ -304,11 +312,13 @@ HandshakeAgreement
 ⇒ PresentedByteHasTLSServerProvenance
 ```
 
-Its status is **OPEN**. The current theories prove the premises in separate
-abstract boundaries, but no theorem yet composes them with the concrete Rust
-parser, HKDF, MPC circuits, and proof serialization. Stating this theorem
-explicitly prevents the collection of local proofs from being mistaken for a
-whole-implementation result.
+The unified `tls13_end_to_end.spthy` transition system proves this implication
+across handshake, Finished, application-secret installation, epoch use,
+record authentication, release, and presentation. It additionally proves that
+the presented session is handshake-derived and that a full `RecordId` cannot
+transfer between sessions. This remains a symbolic composition theorem; the
+concrete refinements below connect selected Rust boundaries but do not turn it
+into a whole-runtime theorem.
 
 ## State and implementation invariants
 
@@ -360,8 +370,8 @@ and OpenSSL `s_server`. The exact command is `./formal/interop.sh`; the focused
 fixture and core validation are run by `./formal/validate.sh`.
 
 The implementation-facing reproducibility split is intentional:
-`cargo test -p tlsn-hmac-sha256 --lib` exercises the 32 SHA-384 component and
-reference tests; `cargo test -p tlsn-mpc-tls` exercises typed epochs, AES-256
+`cargo test -p tlsn-hmac-sha256 --lib` exercises 36 component tests, including
+12 focused SHA-384/reference tests; `cargo test -p tlsn-mpc-tls` exercises typed epochs, AES-256
 record round trips, SHA-384 epoch installation, and the public Finished
 callback; `formal/validate.sh` adds the TLS 1.3 fixture; and `formal/verify.sh`
 adds the focused integration tests before running the theorem checkers. This
@@ -373,13 +383,13 @@ evidence and from symbolic proof evidence.
 | Claim | Evidence now | Missing evidence |
 |---|---|---|
 | Keys are not intentionally decoded | Code audit; symbolic secrecy | Whole-program information-flow/refinement proof |
-| Authenticated release implies modeled server provenance | Tamarin theorem | Computational MPC composition; concrete handshake binding |
+| Authenticated release implies modeled server provenance | Unified Tamarin theorem and concrete session/record binding | Computational malicious-security reduction for the full MPC runtime |
 | Epoch sequences do not wrap or repeat locally | Lean and Kani | Concurrent whole-program refinement |
 | Fixed-IV nonce derivation is injective | Lean and Kani | Circuit/reference equivalence |
-| SHA-384 compression and streaming match clear references | MPZ two-party tests, multi-block vectors | Computational circuit proof and whole-program refinement |
-| SHA-384 handshake/application key widths are preserved | Typed VM views and Lean width theorem | Rust-to-TLS parser/suite refinement |
+| SHA-384 compression refines SHA-512 compression | Shared circuit/native wiring; arbitrary-input Kani primitive and compression proofs; MPZ tests | MPZ primitive gate semantics are trusted |
+| SHA-384 handshake/application key widths are preserved | Typed VM views, Lean width theorem, and concrete suite-profile Kani proofs | Whole-program runtime noninterference |
 | SHA-384 Finished output is public while its key stays secret-shared | Two-party MPC-TLS callback test | Full malicious-party composition |
-| Full proof transcript is authentic | Tamarin handshake/transcript model plus end-to-end tests | Concrete HKDF/parser refinement and end-to-end composition |
+| Full proof transcript is authentic | Unified provenance theorem, exact Rust transcript retention, independent leader/follower rehashing | X.509 parser and full-runtime refinement |
 | Selective disclosure preserves the public projection | Minimal Tamarin observational-equivalence model | Production leakage function and serialization refinement |
 
 The interoperation result is evidence of compatibility, not a security proof;
@@ -389,22 +399,18 @@ malicious-party experiments.
 # Limitations and research agenda
 
 The strongest missing result is a composable malicious-security theorem for
-the concrete MPZ protocols and release capsule. The symbolic models do not yet
-cover concrete TLS handshake HKDF/parser refinement, X.509 validation,
-production transcript commitments, proof serialization, malicious verifier, side channels,
-concurrency, or crashes. AES and GHASH circuit equivalence is tested but not
-machine-proved. The tag-share capsule is nonstandard and should preferably be
+the complete MPZ protocols and release capsule. The current proofs do not cover
+X.509 implementation correctness, malicious-verifier privacy, side channels,
+concurrency, crashes, denial of service, or whole-runtime noninterference. AES
+and GHASH have executable circuit/reference equivalence evidence; unlike the
+SHA-384 compression refinement above, they do not yet have arbitrary-input
+machine proofs. The tag-share capsule is nonstandard and should preferably be
 replaced by an explicitly context-bound release key derived inside MPC.
 
-Cross-session non-transferability is also open: a release artifact from one
-handshake must not open under another session, even when the server, plaintext,
-cipher suite, and sequence number are identical. The planned release context
-therefore includes a transcript-derived session identity together with
-direction, generation, sequence, AAD, and ciphertext digest.
-
-Accordingly, the correct current claim is a machine-checked symbolic
-record-layer model plus locally verified state invariants—not a formally
-verified TLSNotary implementation.
+Accordingly, the correct claim is a working bounded TLS 1.3 notarization
+implementation with machine-checked protocol, provenance, session-binding,
+state, suite, transcript, HKDF-label, and SHA-384 compression layers—not a
+proof of the complete deployed software stack against every adversary.
 
 # Reproducibility
 
@@ -412,7 +418,7 @@ The repository contains the Tamarin theories, Lean specification, Kani
 harnesses, and `formal/verify.sh`, which fails unless every required lemma is
 reported as verified. On the reference machine, the wrapper runs Tamarin
 1.12.0, Maude 3.5.1, Lean 4.32.2, and Kani 0.67. The executable validation
-suite reports 31 MPC tests, 22 HMAC tests, 3 core configuration tests, and the
+suite reports 36 MPC tests, 36 HMAC/component tests, 3 core configuration tests, and the
 TLS 1.3 integration fixture; the explicit Docker interoperability suite passes
 nginx (RSA and ECDSA), Apache (RSA), Caddy (RSA), and OpenSSL `s_server`.
 These counts are reproducibility anchors, not a claim of exhaustive coverage.
@@ -428,8 +434,9 @@ TLS 1.3 notarization can retain the central TLSNotary provenance invariant by
 keeping application keys secret-shared and gating plaintext release on joint
 record authentication. Layered verification exposed both useful positive
 results and a subtle boundary between plaintext authenticity and exact tag
-agreement. Completing handshake/transcript proofs, computational MPC
-composition, circuit equivalence, and malicious-verifier privacy remains
-necessary before claiming end-to-end formal verification.
+agreement. Completing computational malicious-security composition, whole-
+runtime noninterference, X.509 refinement, side-channel analysis, and
+malicious-verifier privacy remains necessary before claiming verification of
+the entire deployed system.
 
 # References

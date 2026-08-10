@@ -14,10 +14,10 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" up -d --build
 sleep 5
 
 cd "$REPO_ROOT"
-TLSN_RUN_DOCKER_INTEROP=1 cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_nginx_rsa
-TLSN_RUN_DOCKER_INTEROP=1 cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_nginx_ecdsa
-TLSN_RUN_DOCKER_INTEROP=1 cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_apache_rsa
+TLSN_RUN_DOCKER_INTEROP=1 cargo test --release -p tlsn --test tls13_interop -- --ignored tls13_interop_nginx_rsa
+TLSN_RUN_DOCKER_INTEROP=1 cargo test --release -p tlsn --test tls13_interop -- --ignored tls13_interop_nginx_ecdsa
+TLSN_RUN_DOCKER_INTEROP=1 cargo test --release -p tlsn --test tls13_interop -- --ignored tls13_interop_apache_rsa
 TLSN_RUN_DOCKER_INTEROP=1 TLSN_RUN_CADDY_INTEROP=1 \
-  cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_caddy_rsa
+  cargo test --release -p tlsn --test tls13_interop -- --ignored tls13_interop_caddy_rsa
 TLSN_RUN_DOCKER_INTEROP=1 TLSN_RUN_OPENSSL_SSERVER=1 \
-  cargo test -p tlsn --test tls13_interop -- --ignored tls13_interop_openssl_rsa
+  cargo test --release -p tlsn --test tls13_interop -- --ignored tls13_interop_openssl_rsa
