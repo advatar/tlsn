@@ -1,5 +1,12 @@
 # STATUS
 
+## CR-014 — Implementation-and-verification paper revision
+
+- [x] Expand the scientific paper with an implementation-level account of TLS 1.3 handshake, key schedule, epochs, records, authenticated release, and presentation.
+- [x] Explain the refinement chain from concrete Rust bytes and state transitions through Kani/Lean to the symbolic Tamarin composition theorem.
+- [x] Reconcile the claim/evidence matrix, trusted computing base, limitations, and reproducibility commands with the current implementation.
+- [x] Rebuild and inspect the manuscript artifacts.
+
 ## CR-012 — TLS 1.3 formal verification and scientific paper
 
 - [x] Define the initial protocol boundary, adversary model, security claims, assumptions, and trusted computing base.

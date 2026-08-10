@@ -164,6 +164,22 @@ state, transcript messages, epochs, and record orchestration. The
 references to their outputs. The record layer consumes those references through
 the MPZ VM; it does not receive a decoded application key.
 
+The implementation boundary is distributed across four principal layers:
+
+| Layer | Principal modules | Responsibility |
+|---|---|---|
+| TLS syntax and state machine | `crates/tls/client` | Parse handshake messages, retain their exact wire encoding, enforce TLS ordering, and invoke backend callbacks |
+| Collaborative handshake | `crates/mpc-tls/src/{leader,follower,tls13}.rs` | Agree protocol version and suite, validate transcript callbacks, execute the joint key schedule, and install typed epochs |
+| Secret-shared primitives | `crates/components/hmac-sha256/src/tls13` | SHA-256/SHA-384, HMAC, HKDF-Extract, HKDF-Expand-Label, Finished, and typed traffic-key views |
+| Records and attestations | `crates/mpc-tls/src/record_layer` and `crates/tlsn/src` | Reserve nonces, run joint AES-GCM, gate plaintext release, assign session-bound record identities, and commit disclosures |
+
+The leader is the network-facing prover. The follower is the verifier-side MPC
+participant. They execute the same protocol version, cipher-suite, transcript,
+and epoch transitions, but neither receives the complete application traffic
+key. Public TLS values—record headers, ciphertext, server tag, certificate
+material, and Finished verify data—may be decoded where the protocol requires
+them. Secret traffic material remains represented by MPZ memory references.
+
 ### Handshake and key schedule
 
 For both negotiated profiles, the key-schedule state follows the TLS 1.3 stages:
@@ -181,6 +197,60 @@ The schedule is stateful. Invalid transitions, repeated hash installation,
 suite/hash-width confusion, and sequence exhaustion return errors. Application
 keys are retained as typed 16- or 32-byte MPZ views with 12-byte IV views; they
 remain VM references and are not decoded.
+
+#### Negotiation and suite profiles
+
+The TLS parser reports the selected `CipherSuite` to the MPC backend before any
+suite-dependent transcript value is accepted. Leader and follower bind that
+message exactly once to a `Tls13SuiteProfile`. The AES-128 profile fixes a
+32-byte SHA-256 digest and 16-byte traffic key; the AES-256 profile fixes a
+48-byte SHA-384 digest and 32-byte traffic key. A later attempt to rebind the
+suite, present a digest of the other width, or install keys of the wrong width
+fails before record processing. Unsupported suites are rejected at this same
+boundary, so capability negotiation is fail closed.
+
+This explicit profile prevents a class of cross-suite state confusion in which
+a length-delimited digest would otherwise be dispatched solely by its byte
+length. Length remains checked, but it is checked against the already-bound
+suite rather than used to infer the suite.
+
+#### Exact transcript refinement
+
+`HandshakeHash` feeds the ordinary TLS digest while also retaining an audit
+copy of every encoded handshake byte. The copy follows the same update points
+as the digest, including the synthetic `message_hash` transition used after a
+HelloRetryRequest. At ServerHello, CertificateVerify, server Finished, and
+client Finished, the TLS state machine supplies both the digest and the exact
+encoded prefix to MPC-TLS.
+
+The leader recomputes the digest from those bytes with the hash selected by the
+negotiated suite before it sends the callback to the follower. The follower
+then performs the same recomputation independently. CertificateVerify and
+Finished processing cannot advance if either recomputation differs, if the
+digest width is wrong, or if the callback arrives under a different suite
+profile. Thus the MPC key schedule does not merely trust an opaque hash chosen
+by the network-facing party.
+
+This refinement covers the bytes entering the TLS transcript and their use at
+the MPC callback boundary. It does not prove the complete X.509 parser,
+certificate path builder, or every branch of the surrounding TLS client.
+
+#### Secret-shared derivation
+
+The key schedule mirrors RFC 8446's early, handshake, and master-secret stages.
+HKDF labels are serialized as
+`uint16(output_length) || uint8(label_length) || "tls13 " || label ||
+uint8(context_length) || context`. Bounds are checked before the narrowing
+integer conversions. Traffic-secret expansion produces typed subviews for
+`key`, `iv`, and `finished`; it does not decode the containing secret to create
+those views. Client and server directions receive distinct label domains and
+distinct epoch objects.
+
+Finished is computed jointly as HMAC over the public transcript hash using the
+secret-shared Finished key. Only the public verify-data output is decoded. The
+application allocator is reachable only after server Finished acceptance, and
+the post-Finished transcript hash is installed once to derive application
+traffic secrets.
 
 ### The SHA-384 circuit added for AES-256 work
 
@@ -217,6 +287,11 @@ compression function equal to `sha2::compress512` for every block and chaining
 state. SHA-384 uses that compression function with its specified initial value
 and six-word output truncation.
 
+The serialized production artifact `data/sha384.bin` is generated from this
+same circuit builder. Reproducibility checks regenerate the artifact and compare
+it byte for byte, preventing a proved source generator from silently diverging
+from the circuit actually loaded by `sha384_vm.rs`.
+
 ### Epochs, records, and release
 
 `WriteEpoch<K, I>` and `ReadEpoch<K, I>` own the traffic key, IV, generation,
@@ -234,7 +309,89 @@ the exact encoded transcript. Leader and follower independently recompute each
 callback digest under the negotiated profile before accepting it. Live suite
 selection dispatches 48-byte callbacks and AES-256 record epochs together.
 
+#### Record processing
+
+Each directional epoch owns `(key, iv, generation, next_sequence)`. The caller
+cannot supply an arbitrary sequence number. Reserving a record returns the
+current value and advances the epoch exactly once; `u64::MAX` is rejected rather
+than wrapped. The record nonce is constructed as required by RFC 8446 by XORing
+the big-endian sequence number into the low eight bytes of the static 12-byte
+IV. A key transition installs a fresh epoch and resets only that epoch's
+sequence.
+
+For an outgoing application record, the plaintext and inner content type are
+padded according to TLS 1.3, encrypted with the joint CTR path, and authenticated
+with GHASH over the five-byte TLSCiphertext header and ciphertext. For an
+incoming record, the parties allocate the same nonce slot, jointly decrypt a
+candidate plaintext, compute additive shares of the expected GCM tag, and run
+the authenticated-release step. A failed authentication attempt still consumes
+its sequence slot, preventing retry-induced nonce reuse.
+
+AES-128 and AES-256 share this orchestration. The suite profile chooses the
+typed key width and preallocated AES circuit, while nonce construction, AAD,
+padding, sequence ownership, and release semantics remain common.
+
+#### Session and presentation binding
+
+A `SessionId` is derived from authenticated handshake material using a
+domain-separated SHA-256 encoding. TLS 1.3 binds the transcript hash and
+ephemeral key; the retained TLS 1.2 compatibility path binds its randoms and
+key material. Every record receives
+`RecordId = (SessionId, direction, generation, sequence)`. Record construction
+checks that supplied identifiers match the transcript's session and expected
+direction.
+
+The same identifiers are included in authenticated-release context,
+plaintext-hash commitment prefixes, secrets handed to the attestation API, and
+presentation verification. The commitment prefix also includes the disclosure
+direction, byte ranges, and ordered record identifiers before the plaintext and
+blinder are hashed. Consequently, identical plaintext at the same sequence in
+two sessions does not produce an interchangeable proof object.
+
+#### Failure behavior and bounded resources
+
+The implementation preallocates a configured number of handshake and
+application record circuits before online execution. Exceeding that bound,
+using the wrong epoch, repeating a one-shot transition, exhausting a sequence,
+or observing inconsistent leader/follower message counts returns an error.
+Unused preallocations are assigned and committed during finalization so that
+both VM parties complete the same circuit schedule. This is important for
+correctness and deadlock avoidance, but it is not a denial-of-service theorem:
+an adversarial peer can still abort or delay the protocol.
+
 # Formal analysis
+
+No single tool proves the complete claim. We use a refinement ladder in which
+each layer has a deliberately narrower obligation:
+
+1. Tamarin proves adversarial protocol traces, ordering, secrecy events,
+   provenance, disclosure binding, and cross-session non-transferability in
+   symbolic transition systems.
+2. Lean proves algebraic and structural specifications for epoch transitions,
+   nonce injectivity, HKDF label layout, suite widths, and key-schedule domains.
+3. Kani model-checks the corresponding concrete Rust state operations and
+   byte-level encoders for arbitrary bounded inputs, and proves the SHA-384
+   Boolean construction compositionally.
+4. Two-party executable tests compare MPC outputs with independent clear
+   cryptographic implementations and exercise adversarial failure cases.
+5. End-to-end fixtures and external servers establish that the composed code
+   actually negotiates and transports TLS 1.3 records.
+
+The layers are complementary. A Tamarin theorem cannot establish that a Rust
+encoder emitted the intended bytes; a Kani harness for a nonce helper cannot
+establish session provenance; and interoperability cannot establish security.
+The claim below uses each result only at its stated boundary.
+
+| Implementation obligation | Artifact | Machine-checked statement |
+|---|---|---|
+| Read/write sequence ownership | `Tls13Epoch.lean`; Kani harnesses in MPC-TLS | Successful reservation advances once, preserves generation, and rejects exhaustion |
+| TLS nonce construction | Lean plus Kani over `make_tls13_nonce` | Fixed-IV nonce mapping is injective over all 64-bit sequences |
+| Negotiated width profile | `Tls13Sha384.lean`; Kani over `Tls13KeyState` | SHA-256/16-byte and SHA-384/32-byte profiles cannot be confused |
+| HKDF label bytes | `Tls13HkdfLabel.lean`; Kani over `make_hkdf_label` | Prefix, lengths, bounds, labels, and arbitrary transcript contexts match the concrete encoding |
+| Transcript callbacks | Concrete Kani/unit refinement checks | Exact encoded bytes recompute to the callback digest under the negotiated suite |
+| SHA-384 compression | Shared generic circuit/native wiring plus Kani | Every Boolean primitive and the full 80-round compression refine the independent SHA-512 reference for arbitrary inputs |
+| Protocol provenance | Unified Tamarin model | Accepted presentation has preceding authenticated handshake, record, release, and attestation events |
+| Cross-session binding | Unified Tamarin model plus Rust tests | The same full record identifier cannot be accepted under distinct sessions |
 
 ## Symbolic model
 
@@ -296,7 +453,8 @@ production circuit or serialization format.
 A fifth model covers the SHA-384/AES-256 suite boundary. It verifies that a
 SHA-384 Finished event precedes acceptance and application-secret installation,
 and that the installed application context is bound to the SHA-384 transcript.
-It intentionally remains separate from the current SHA-256 production path.
+The concrete negotiated suite profile and live interoperability tests connect
+that symbolic boundary to the enabled AES-256 production path.
 
 ## End-to-end composition theorem
 
@@ -328,13 +486,52 @@ exhaustion, and cannot return a wrapped sequence. It also proves nonce
 injectivity for a fixed IV using XOR cancellation.
 
 A companion Lean specification proves the length and `tls13 ` prefix framing
-of `HkdfLabel`, matching the Rust encoder's structural obligation. This is a
-byte-layout theorem, not a proof of HMAC or HKDF circuit correctness.
+of `HkdfLabel`, matching the Rust encoder's structural obligation. Kani then
+checks the concrete encoder for every possible 32-byte and 48-byte transcript
+context, including its narrowing bounds. The Lean SHA-384 specification proves
+the digest, key, IV, Finished, and label-domain widths and that the client,
+server, handshake, application, key, IV, and Finished labels are distinct.
 
 Four Kani harnesses model-check the actual Rust read/write reservation methods
 and nonce function for all `u64` values and all 96-bit IVs. These checks connect
 the stated local invariants to the implementation but do not constitute a
 whole-program refinement proof.
+
+Additional Kani harnesses check that suite negotiation fixes the only accepted
+hash/key-width pair and that it cannot be rebound. For SHA-384, the actual
+circuit builder implements generic bit and word traits. Instantiating those
+traits with Boolean values lets Kani prove ripple-carry wrapping addition,
+choice, majority, and the four SHA-512 sigma functions over all 64-bit inputs.
+Instantiating the shared schedule and compression wiring with native `u64`
+words then lets Kani compare all 80 rounds with `sha2::compress512` for an
+arbitrary block and chaining state. The circuit instantiation uses the same
+generic functions, leaving MPZ's XOR, AND, inversion, serialization, and VM
+execution semantics in the trusted implementation base.
+
+## Concrete-to-symbolic refinement boundary
+
+The end-to-end symbolic theorem consumes events such as
+`HandshakeAuthenticated`, `ApplicationEpoch`, `RecordAuthenticated`,
+`PlaintextReleased`, and `PresentationAccepted`. Concrete code does not emit a
+Tamarin trace at runtime, so the connection is established by matching guarded
+state transitions and data carried across them:
+
+- suite binding and independent transcript recomputation guard handshake and
+  Finished callbacks;
+- application epoch installation occurs only after the accepted Finished
+  callback and carries suite-typed key/IV references;
+- epoch-owned direction, generation, and sequence form the concrete
+  `RecordId` used by record authentication;
+- authenticated release carries that record context; and
+- commitment construction and presentation verification retain the same
+  session and record identifiers.
+
+This is stronger than unrelated local tests because the same values cross all
+concrete boundaries and the unified symbolic theorem reasons about their full
+ordering. It is weaker than verified compilation or a whole-program refinement
+theorem: we trust the reviewed correspondence between Rust transitions and
+symbolic events, plus the toolchain and runtime components listed in the
+trusted computing base.
 
 ## Computational argument
 
