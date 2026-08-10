@@ -166,12 +166,18 @@ the MPZ VM; it does not receive a decoded application key.
 
 The implementation boundary is distributed across four principal layers:
 
-| Layer | Principal modules | Responsibility |
-|---|---|---|
-| TLS syntax and state machine | `crates/tls/client` | Parse handshake messages, retain their exact wire encoding, enforce TLS ordering, and invoke backend callbacks |
-| Collaborative handshake | `crates/mpc-tls/src/{leader,follower,tls13}.rs` | Agree protocol version and suite, validate transcript callbacks, execute the joint key schedule, and install typed epochs |
-| Secret-shared primitives | `crates/components/hmac-sha256/src/tls13` | SHA-256/SHA-384, HMAC, HKDF-Extract, HKDF-Expand-Label, Finished, and typed traffic-key views |
-| Records and attestations | `crates/mpc-tls/src/record_layer` and `crates/tlsn/src` | Reserve nonces, run joint AES-GCM, gate plaintext release, assign session-bound record identities, and commit disclosures |
+- TLS syntax and state machine (`crates/tls/client`): parses handshake
+  messages, retains their exact wire encoding, enforces TLS ordering, and
+  invokes backend callbacks.
+- Collaborative handshake (`crates/mpc-tls/src`): agrees protocol version and
+  suite, validates transcript callbacks, executes the joint key schedule, and
+  installs typed epochs.
+- Secret-shared primitives (`crates/components/hmac-sha256/src/tls13`):
+  implements SHA-256/SHA-384, HMAC, HKDF-Extract, HKDF-Expand-Label, Finished,
+  and typed traffic-key views.
+- Records and attestations (`crates/mpc-tls/src/record_layer` and
+  `crates/tlsn/src`): reserves nonces, runs joint AES-GCM, gates plaintext
+  release, assigns session-bound record identities, and commits disclosures.
 
 The leader is the network-facing prover. The follower is the verifier-side MPC
 participant. They execute the same protocol version, cipher-suite, transcript,
@@ -422,7 +428,7 @@ The attack trace is:
 server emits (C, T_valid)
 prover submits (C, T_fake) but retains T_valid
 capsule opens under T_valid
-plaintext is authentic, but T_submitted ≠ T_valid
+plaintext is authentic, but T_submitted != T_valid
 ```
 
 This is a positive formal-methods result: verification found and invalidated an
@@ -462,12 +468,12 @@ The intended end-to-end theorem is:
 
 ```text
 HandshakeAgreement
-∧ FinishedAcceptance
-∧ ApplicationSecretInstallation
-∧ EpochBinding
-∧ RecordAuthentication
-∧ DisclosureBinding
-⇒ PresentedByteHasTLSServerProvenance
+AND FinishedAcceptance
+AND ApplicationSecretInstallation
+AND EpochBinding
+AND RecordAuthentication
+AND DisclosureBinding
+IMPLIES PresentedByteHasTLSServerProvenance
 ```
 
 The unified `tls13_end_to_end.spthy` transition system proves this implication

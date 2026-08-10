@@ -1,5 +1,11 @@
 # STATUS
 
+## CR-015 — Publication PDF layout
+
+- [x] Produce a paginated, publication-width PDF directly from the LaTeX manuscript rather than browser-printing the HTML artifact.
+- [x] Render every PDF page and inspect typography, tables, page breaks, headers/footers, and clipping.
+- [x] Commit the reproducible PDF build workflow and final manuscript PDF.
+
 ## CR-014 — Implementation-and-verification paper revision
 
 - [x] Expand the scientific paper with an implementation-level account of TLS 1.3 handshake, key schedule, epochs, records, authenticated release, and presentation.

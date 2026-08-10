@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p paper/build
+mkdir -p paper/build output/pdf
 pandoc paper/paper.md \
   --from markdown \
   --citeproc \
@@ -18,8 +18,6 @@ pandoc paper/paper.md \
   --to latex \
   --output paper/build/tls13-tlsnotary.tex
 
-if [[ "${TLSN_BUILD_PDF:-0}" == "1" ]]; then
-  tectonic \
-    --outdir paper/build \
-    paper/build/tls13-tlsnotary.tex
-fi
+tectonic \
+  --outdir output/pdf \
+  paper/build/tls13-tlsnotary.tex
