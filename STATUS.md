@@ -37,6 +37,9 @@
 - [x] Implement a standalone SHA-384 compression circuit and verify it against `sha2::compress512`.
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.
 - [ ] Formally verify SHA-384 circuit/reference equivalence and HMAC/HKDF width/domain invariants.
+  - [ ] Prove every Boolean-circuit word primitive equivalent to its SHA-512 bit-vector operation for arbitrary 64-bit inputs.
+  - [ ] Prove the 80-round compression composition refines the SHA-512 compression specification used by SHA-384.
+  - [x] Prove SHA-384 HMAC/HKDF domain separation and fixed-width output invariants.
 - [x] Extend Tamarin/Lean/Kani artifacts with a suite-specific AES-256/SHA-384 symbolic key-schedule boundary.
 - [x] Extend Lean/Kani artifacts for AES-256 epochs and suite negotiation, and connect negotiated hash/key widths to the concrete state machine.
 - [x] Re-run unit tests and genuine AES-256 interoperability against nginx, Caddy, and OpenSSL after enabling `TLS_AES_256_GCM_SHA384`.
