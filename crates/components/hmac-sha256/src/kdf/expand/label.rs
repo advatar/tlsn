@@ -150,6 +150,14 @@ pub(crate) fn make_hkdf_label(label: &[u8], ctx: &[u8], out_len: usize) -> Vec<u
     );
 
     const LABEL_PREFIX: &[u8] = b"tls13 ";
+    assert!(
+        LABEL_PREFIX.len() + label.len() <= u8::MAX as usize,
+        "prefixed HKDF label length exceeds RFC 8446 encoding"
+    );
+    assert!(
+        ctx.len() <= u8::MAX as usize,
+        "HKDF label context length exceeds RFC 8446 encoding"
+    );
 
     let mut hkdf_label = Vec::new();
     let output_len = u16::to_be_bytes(out_len as u16);
@@ -163,6 +171,44 @@ pub(crate) fn make_hkdf_label(label: &[u8], ctx: &[u8], out_len: usize) -> Vec<u
     hkdf_label.extend_from_slice(&context_len);
     hkdf_label.extend_from_slice(ctx);
     hkdf_label
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::make_hkdf_label;
+
+    fn assert_refines_rfc8446(
+        encoded: &[u8],
+        label: &[u8],
+        context: &[u8],
+        output_len: usize,
+    ) {
+        assert_eq!(encoded.len(), 2 + 1 + 6 + label.len() + 1 + context.len());
+        assert_eq!(&encoded[..2], &(output_len as u16).to_be_bytes());
+        assert_eq!(encoded[2] as usize, 6 + label.len());
+        assert_eq!(&encoded[3..9], b"tls13 ");
+        assert_eq!(&encoded[9..9 + label.len()], label);
+        assert_eq!(encoded[9 + label.len()] as usize, context.len());
+        assert_eq!(&encoded[10 + label.len()..], context);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(80)]
+    fn sha256_traffic_label_refines_rfc8446_for_all_transcript_hashes() {
+        let context: [u8; 32] = kani::any();
+        let label = b"c ap traffic";
+        let encoded = make_hkdf_label(label, &context, 32);
+        assert_refines_rfc8446(&encoded, label, &context, 32);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(96)]
+    fn sha384_traffic_label_refines_rfc8446_for_all_transcript_hashes() {
+        let context: [u8; 48] = kani::any();
+        let label = b"c ap traffic";
+        let encoded = make_hkdf_label(label, &context, 48);
+        assert_refines_rfc8446(&encoded, label, &context, 48);
+    }
 }
 
 /// Returns the length of an HKDF label.

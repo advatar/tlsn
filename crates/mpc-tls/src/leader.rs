@@ -2,7 +2,7 @@ use crate::{
     error::MpcTlsError,
     msg::{
         ClientFinishedVd, Decrypt, Encrypt, Message, ServerFinishedVd, SetClientRandom,
-        SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake, Tls13CertVerify,
+        SetCipherSuite, SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake, Tls13CertVerify,
         Tls13ClientFinishedVd, Tls13DecryptApplication, Tls13EncryptApplication,
         Tls13FinishedHash, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
     },
@@ -560,13 +560,28 @@ impl Backend for MpcTlsLeader {
     }
 
     async fn set_cipher_suite(&mut self, suite: SupportedCipherSuite) -> Result<(), BackendError> {
-        let State::Handshake { cipher_suite, .. } = &mut self.state else {
+        let State::Handshake {
+            ctx,
+            cipher_suite,
+            tls13,
+            ..
+        } = &mut self.state else {
             return Err(
                 MpcTlsError::state("must be in handshake state to set cipher suite").into(),
             );
         };
 
         trace!("setting cipher suite: {:?}", suite);
+
+        if matches!(suite, SupportedCipherSuite::Tls13(_)) {
+            tls13.set_suite(suite.suite())?;
+            ctx.io_mut()
+                .send(Message::SetCipherSuite(SetCipherSuite {
+                    suite: suite.suite(),
+                }))
+                .await
+                .map_err(MpcTlsError::from)?;
+        }
 
         *cipher_suite = Some(suite.suite());
 
@@ -779,9 +794,10 @@ impl Backend for MpcTlsLeader {
         cert_verify: DigitallySignedStruct,
         handshake_hash: Vec<u8>,
     ) -> Result<(), BackendError> {
-        if !matches!(handshake_hash.len(), 32 | 48) {
-            return Err(MpcTlsError::hs("tls13 cert verify hash must be 32 or 48 bytes").into());
-        }
+        let State::Handshake { tls13, .. } = &self.state else {
+            return Err(MpcTlsError::state("must be in handshake state for TLS 1.3 CertificateVerify").into());
+        };
+        tls13.validate_transcript_hash(&handshake_hash)?;
         let transcript_hash = handshake_hash;
 
         let State::Handshake {
@@ -836,6 +852,7 @@ impl Backend for MpcTlsLeader {
 
         if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
             debug!("setting TLS 1.3 application handshake hash");
+            tls13.validate_transcript_hash(&handshake_hash)?;
             ctx.io_mut()
                 .send(Message::Tls13HandshakeHash(Tls13HandshakeHash {
                     handshake_hash: handshake_hash.clone(),
@@ -895,6 +912,7 @@ impl Backend for MpcTlsLeader {
             let mut vm = vm
                 .try_lock()
                 .map_err(|_| MpcTlsError::other("VM lock is held"))?;
+            tls13.validate_transcript_hash(&hash)?;
             match hash.len() {
                 32 => tls13.set_hello_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
                 48 => tls13.set_sha384_hello_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
@@ -920,6 +938,7 @@ impl Backend for MpcTlsLeader {
                     protocol_version: Some(ProtocolVersion::TLSv1_3),
                     ..
                 } => {
+                    tls13.validate_transcript_hash(&hash)?;
                     ctx.io_mut()
                         .send(Message::Tls13FinishedHash(Tls13FinishedHash {
                             handshake_hash: hash.to_vec(),
@@ -959,6 +978,7 @@ impl Backend for MpcTlsLeader {
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             } => {
+                tls13.validate_transcript_hash(&hash)?;
                 let vd = tls13.server_finished_vd(hash).map_err(MpcTlsError::hs)?;
                 *sf_vd = Some(vd.to_vec());
                 ctx.io_mut()
@@ -1025,6 +1045,7 @@ impl Backend for MpcTlsLeader {
                     protocol_version: Some(ProtocolVersion::TLSv1_3),
                     ..
                 } => {
+                    tls13.validate_transcript_hash(&hash)?;
                     ctx.io_mut()
                         .send(Message::Tls13FinishedHash(Tls13FinishedHash {
                             handshake_hash: hash.to_vec(),
@@ -1065,6 +1086,7 @@ impl Backend for MpcTlsLeader {
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             } => {
+                tls13.validate_transcript_hash(&hash)?;
                 let vd = tls13.client_finished_vd(hash).map_err(MpcTlsError::hs)?;
                 *cf_vd = Some(vd.to_vec());
                 ctx.io_mut()

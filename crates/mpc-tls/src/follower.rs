@@ -1,6 +1,6 @@
 use crate::{
     msg::{
-        Message, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd, Tls13DecryptApplication,
+        Message, SetCipherSuite, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd, Tls13DecryptApplication,
         Tls13FinishedHash,
         Tls13EncryptApplication, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
         Tls13ServerFinishedVd,
@@ -274,6 +274,9 @@ impl MpcTlsFollower {
                 Message::SetProtocolVersion(version) => {
                     protocol_version = Some(version.version);
                 }
+                Message::SetCipherSuite(SetCipherSuite { suite }) => {
+                    tls13.set_suite(suite)?;
+                }
                 Message::SetClientRandom(random) => {
                     if client_random.is_some() {
                         return Err(MpcTlsError::hs("client random already set"));
@@ -400,6 +403,7 @@ impl MpcTlsFollower {
                 }
                 Message::Tls13HelloHash(Tls13HelloHash { hello_hash }) => {
                     debug!("setting TLS 1.3 hello hash");
+                    tls13.validate_transcript_hash(&hello_hash)?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -414,6 +418,7 @@ impl MpcTlsFollower {
                 }
                 Message::Tls13HandshakeHash(Tls13HandshakeHash { handshake_hash }) => {
                     debug!("setting TLS 1.3 application handshake hash");
+                    tls13.validate_transcript_hash(&handshake_hash)?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -434,6 +439,7 @@ impl MpcTlsFollower {
                     }
                 }
                 Message::Tls13FinishedHash(Tls13FinishedHash { handshake_hash, server }) => {
+                    tls13.validate_transcript_hash(&handshake_hash)?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -447,9 +453,10 @@ impl MpcTlsFollower {
                         .await?;
                 }
                 Message::Tls13ClientFinishedVd(Tls13ClientFinishedVd {
-                    handshake_hash: _,
+                    handshake_hash,
                     verify_data,
                 }) => {
+                    tls13.validate_transcript_hash(&handshake_hash)?;
                     if cf_vd.is_some() {
                         return Err(MpcTlsError::hs("client finished VD already computed"));
                     }
@@ -463,6 +470,7 @@ impl MpcTlsFollower {
                     sf_vd = Some(verify_data.to_vec());
                 }
                 Message::Tls13CertVerify(Tls13CertVerify { transcript_hash }) => {
+                    tls13.validate_transcript_hash(&transcript_hash)?;
                     tls13_cert_verify_transcript_hash = Some(transcript_hash);
                 }
                 Message::Tls13SendRecord(Tls13RecordMessage { record }) => {

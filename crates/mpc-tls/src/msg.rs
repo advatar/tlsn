@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tls_core::{
     key::PublicKey,
-    msgs::enums::{ContentType, ProtocolVersion},
+    msgs::enums::{CipherSuite, ContentType, ProtocolVersion},
 };
 use tlsn_core::transcript::Record;
 
@@ -11,6 +11,7 @@ use crate::record_layer::{DecryptMode, EncryptMode};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum Message {
     SetProtocolVersion(SetProtocolVersion),
+    SetCipherSuite(SetCipherSuite),
     SetClientRandom(SetClientRandom),
     StartHandshake(StartHandshake),
     SetServerRandom(SetServerRandom),
@@ -37,6 +38,11 @@ pub(crate) enum Message {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SetProtocolVersion {
     pub(crate) version: ProtocolVersion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SetCipherSuite {
+    pub(crate) suite: CipherSuite,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

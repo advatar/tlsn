@@ -13,7 +13,7 @@ use mpz_vm_core::Vm as VmTrait;
 use sha2::Sha256;
 use tls_core::msgs::{
     base::Payload,
-    enums::{ContentType, ProtocolVersion},
+    enums::{CipherSuite, ContentType, ProtocolVersion},
     message::{OpaqueMessage, PlainMessage},
 };
 use tlsn_core::transcript::{ContentType as TranscriptContentType, Record};
@@ -30,6 +30,33 @@ pub enum Epoch {
     Handshake,
     /// Application traffic keys.
     Application,
+}
+
+/// Concrete cryptographic dimensions selected by TLS 1.3 negotiation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SuiteProfile {
+    pub(crate) hash_len: usize,
+    pub(crate) key_len: usize,
+}
+
+pub(crate) fn suite_profile(suite: CipherSuite) -> Result<SuiteProfile, MpcTlsError> {
+    match suite {
+        CipherSuite::TLS13_AES_128_GCM_SHA256 => Ok(SuiteProfile {
+            hash_len: 32,
+            key_len: 16,
+        }),
+        CipherSuite::TLS13_AES_256_GCM_SHA384 => Ok(SuiteProfile {
+            hash_len: 48,
+            key_len: 32,
+        }),
+        _ => Err(MpcTlsError::hs("unsupported TLS 1.3 cipher suite")),
+    }
+}
+
+fn transcript_hash_matches(suite: CipherSuite, hash_len: usize) -> bool {
+    suite_profile(suite)
+        .map(|profile| profile.hash_len == hash_len)
+        .unwrap_or(false)
 }
 
 /// A TLS 1.3 write-key epoch with an exclusively owned record sequence number.
@@ -198,6 +225,7 @@ pub(crate) struct Tls13KeyState {
     sha384_application_material: Option<Sha384ApplicationKeys>,
     sha384_client_finished: Option<hmac_sha256::DeferredFinishedSha384>,
     sha384_server_finished: Option<hmac_sha256::DeferredFinishedSha384>,
+    suite: Option<CipherSuite>,
 }
 
 impl Tls13KeyState {
@@ -215,7 +243,32 @@ impl Tls13KeyState {
             sha384_application_material: None,
             sha384_client_finished: None,
             sha384_server_finished: None,
+            suite: None,
         }
+    }
+
+    pub(crate) fn set_suite(&mut self, suite: CipherSuite) -> Result<(), MpcTlsError> {
+        suite_profile(suite)?;
+        match self.suite {
+            Some(current) if current != suite => {
+                Err(MpcTlsError::state("TLS 1.3 cipher suite was already fixed"))
+            }
+            _ => {
+                self.suite = Some(suite);
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn validate_transcript_hash(&self, hash: &[u8]) -> Result<SuiteProfile, MpcTlsError> {
+        let suite = self
+            .suite
+            .ok_or_else(|| MpcTlsError::state("TLS 1.3 cipher suite is not fixed"))?;
+        let profile = suite_profile(suite)?;
+        if !transcript_hash_matches(suite, hash.len()) {
+            return Err(MpcTlsError::hs("TLS 1.3 transcript hash width does not match the negotiated suite"));
+        }
+        Ok(profile)
     }
 
     pub(crate) fn alloc(
@@ -929,7 +982,39 @@ fn unpad_tls13(payload: &mut Vec<u8>) -> Result<ContentType, MpcTlsError> {
 
 #[cfg(kani)]
 mod verification {
-    use super::{make_tls13_nonce, Epoch, ReadEpoch, WriteEpoch};
+    use super::{make_tls13_nonce, suite_profile, transcript_hash_matches, Epoch, ReadEpoch, WriteEpoch};
+    use tls_core::msgs::enums::CipherSuite;
+
+    #[kani::proof]
+    fn negotiated_suite_fixes_hash_and_key_widths() {
+        let aes256: bool = kani::any();
+        let suite = if aes256 {
+            CipherSuite::TLS13_AES_256_GCM_SHA384
+        } else {
+            CipherSuite::TLS13_AES_128_GCM_SHA256
+        };
+        let profile = suite_profile(suite).unwrap();
+
+        assert_eq!(profile.hash_len, if aes256 { 48 } else { 32 });
+        assert_eq!(profile.key_len, if aes256 { 32 } else { 16 });
+    }
+
+    #[kani::proof]
+    fn transcript_width_cannot_select_a_different_suite() {
+        let aes256: bool = kani::any();
+        let suite = if aes256 {
+            CipherSuite::TLS13_AES_256_GCM_SHA384
+        } else {
+            CipherSuite::TLS13_AES_128_GCM_SHA256
+        };
+        if aes256 {
+            assert!(transcript_hash_matches(suite, 48));
+            assert!(!transcript_hash_matches(suite, 32));
+        } else {
+            assert!(transcript_hash_matches(suite, 32));
+            assert!(!transcript_hash_matches(suite, 48));
+        }
+    }
 
     #[kani::proof]
     fn write_reservation_returns_owned_sequence_and_advances_once() {
@@ -1242,6 +1327,28 @@ mod tests {
         assert_eq!(decrypted_record.typ, TranscriptContentType::ApplicationData);
         assert_eq!(write_epoch.next_sequence(), 1);
         assert_eq!(read_epoch.next_sequence(), 1);
+    }
+
+    #[test]
+    fn negotiated_suite_rejects_transcript_width_confusion() {
+        use tls_core::msgs::enums::CipherSuite;
+
+        let mut sha256 = Tls13KeyState::new(Mode::Normal, Role::Leader);
+        sha256
+            .set_suite(CipherSuite::TLS13_AES_128_GCM_SHA256)
+            .unwrap();
+        assert!(sha256.validate_transcript_hash(&[0; 32]).is_ok());
+        assert!(sha256.validate_transcript_hash(&[0; 48]).is_err());
+
+        let mut sha384 = Tls13KeyState::new(Mode::Normal, Role::Leader);
+        sha384
+            .set_suite(CipherSuite::TLS13_AES_256_GCM_SHA384)
+            .unwrap();
+        assert!(sha384.validate_transcript_hash(&[0; 48]).is_ok());
+        assert!(sha384.validate_transcript_hash(&[0; 32]).is_err());
+        assert!(sha384
+            .set_suite(CipherSuite::TLS13_AES_128_GCM_SHA256)
+            .is_err());
     }
 
     #[test]

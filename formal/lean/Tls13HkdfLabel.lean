@@ -11,8 +11,10 @@ namespace Tls13
 
 def labelPrefix : List UInt8 := [116, 108, 115, 49, 51, 32] -- "tls13 "
 
-def u16Bytes (_ : Nat) : List UInt8 := [0, 0]
-def u8Byte (_ : Nat) : List UInt8 := [0]
+def u16Bytes (n : Nat) : List UInt8 :=
+  [UInt8.ofNat (n / 256), UInt8.ofNat n]
+
+def u8Byte (n : Nat) : List UInt8 := [UInt8.ofNat n]
 
 def hkdfLabel (label context : List UInt8) (outputLength : Nat) : List UInt8 :=
   u16Bytes outputLength ++
@@ -34,5 +36,25 @@ theorem hkdfLabel_starts_with_length_and_prefix
     (hkdfLabel label context outputLength).take 3 =
       (u16Bytes outputLength ++ u8Byte (labelPrefix.length + label.length)).take 3 := by
   simp [hkdfLabel, u16Bytes, u8Byte, List.take_append]
+
+theorem hkdfLabel_output_length_bytes
+    (label context : List UInt8) (outputLength : Nat) :
+    (hkdfLabel label context outputLength).take 2 = u16Bytes outputLength := by
+  simp [hkdfLabel, u16Bytes]
+
+theorem hkdfLabel_prefixed_label_length_byte
+    (label context : List UInt8) (outputLength : Nat) :
+    (hkdfLabel label context outputLength)[2]? =
+      some (UInt8.ofNat (labelPrefix.length + label.length)) := by
+  simp [hkdfLabel, u16Bytes, u8Byte]
+
+theorem hkdfLabel_context_length_byte
+    (label context : List UInt8) (outputLength : Nat) :
+    (hkdfLabel label context outputLength).drop
+        (u16Bytes outputLength ++
+          u8Byte (labelPrefix.length + label.length) ++
+          labelPrefix ++ label).length =
+      u8Byte context.length ++ context := by
+  simp [hkdfLabel]
 
 end Tls13
