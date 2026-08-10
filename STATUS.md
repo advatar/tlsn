@@ -37,7 +37,7 @@
 - [x] Specify the MPZ SHA-384 circuit signature, constants/round structure, and integration points.
 - [ ] Formally verify SHA-384 circuit/reference equivalence and HMAC/HKDF width/domain invariants.
 - [x] Extend Tamarin/Lean/Kani artifacts with a suite-specific AES-256/SHA-384 symbolic key-schedule boundary.
-- [ ] Extend Lean/Kani artifacts for AES-256 epochs and suite negotiation, and connect the circuit to the concrete state machine.
+- [x] Extend Lean/Kani artifacts for AES-256 epochs and suite negotiation, and connect negotiated hash/key widths to the concrete state machine.
 - [x] Re-run unit tests and genuine AES-256 interoperability against nginx, Caddy, and OpenSSL after enabling `TLS_AES_256_GCM_SHA384`.
 - [x] Replace the AES-256 S-box with the shallow Boyar--Peralta circuit and split key expansion from block encryption; circuit/table and NIST-vector tests pass.
 - [x] Preallocate the SHA-384 live key schedule before VM setup through handshake, Finished, and application traffic-key derivation.

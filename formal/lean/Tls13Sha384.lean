@@ -28,4 +28,41 @@ theorem label_encoding_has_fixed_overhead (label context : List UInt8) :
       10 + label.length + context.length := by
   simp [tlsLabelPrefixBytes, Nat.add_comm, Nat.add_left_comm]
 
+inductive CipherSuite where
+  | aes128Sha256
+  | aes256Sha384
+  deriving DecidableEq
+
+structure SuiteProfile where
+  hashBytes : Nat
+  keyBytes : Nat
+  ivBytes : Nat
+  deriving DecidableEq
+
+def suiteProfile : CipherSuite → SuiteProfile
+  | .aes128Sha256 => ⟨32, 16, 12⟩
+  | .aes256Sha384 => ⟨48, 32, 12⟩
+
+theorem negotiated_sha384_profile :
+    suiteProfile .aes256Sha384 = ⟨48, 32, 12⟩ := by rfl
+
+theorem profile_hash_width_identifies_suite (suite : CipherSuite) :
+    (suiteProfile suite).hashBytes = 48 ↔ suite = .aes256Sha384 := by
+  cases suite <;> simp [suiteProfile]
+
+theorem profile_key_width_identifies_suite (suite : CipherSuite) :
+    (suiteProfile suite).keyBytes = 32 ↔ suite = .aes256Sha384 := by
+  cases suite <;> simp [suiteProfile]
+
+structure Aes256Epoch where
+  key : Vector UInt8 32
+  iv : Vector UInt8 12
+  generation : Nat
+  nextSequence : Nat
+
+theorem aes256_epoch_preserves_suite_widths (epoch : Aes256Epoch) :
+    epoch.key.size = (suiteProfile .aes256Sha384).keyBytes ∧
+    epoch.iv.size = (suiteProfile .aes256Sha384).ivBytes := by
+  simp [suiteProfile]
+
 end Tls13
