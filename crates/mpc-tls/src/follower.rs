@@ -1,9 +1,8 @@
 use crate::{
     msg::{
-        Message, SetCipherSuite, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd, Tls13DecryptApplication,
-        Tls13FinishedHash,
-        Tls13EncryptApplication, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
-        Tls13ServerFinishedVd,
+        Message, SetCipherSuite, StartHandshake, Tls13CertVerify, Tls13ClientFinishedVd,
+        Tls13DecryptApplication, Tls13EncryptApplication, Tls13FinishedHash, Tls13HandshakeHash,
+        Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
     },
     record_layer::{aead::MpcAesGcm, RecordLayer, Tls13ApplicationMaterial},
     tls13::Tls13KeyState,
@@ -401,45 +400,111 @@ impl MpcTlsFollower {
                             .to_vec(),
                     );
                 }
-                Message::Tls13HelloHash(Tls13HelloHash { hello_hash }) => {
+                Message::Tls13HelloHash(Tls13HelloHash {
+                    hello_hash,
+                    transcript,
+                }) => {
                     debug!("setting TLS 1.3 hello hash");
-                    tls13.validate_transcript_hash(&hello_hash)?;
+                    tls13.validate_transcript(&transcript, &hello_hash)?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
 
                     match hello_hash.len() {
-                        32 => tls13.set_hello_hash(&mut self.ctx, &mut *vm, hello_hash.try_into().unwrap()).await?,
-                        48 => tls13.set_sha384_hello_hash(&mut self.ctx, &mut *vm, hello_hash.try_into().unwrap()).await?,
-                        _ => return Err(MpcTlsError::hs("TLS 1.3 hello hash must be 32 or 48 bytes")),
+                        32 => {
+                            tls13
+                                .set_hello_hash(
+                                    &mut self.ctx,
+                                    &mut *vm,
+                                    hello_hash.try_into().unwrap(),
+                                )
+                                .await?
+                        }
+                        48 => {
+                            tls13
+                                .set_sha384_hello_hash(
+                                    &mut self.ctx,
+                                    &mut *vm,
+                                    hello_hash.try_into().unwrap(),
+                                )
+                                .await?
+                        }
+                        _ => {
+                            return Err(MpcTlsError::hs(
+                                "TLS 1.3 hello hash must be 32 or 48 bytes",
+                            ))
+                        }
                     }
                     debug!("TLS 1.3 application AEAD circuits preallocated");
                     debug!("TLS 1.3 hello hash set");
                 }
-                Message::Tls13HandshakeHash(Tls13HandshakeHash { handshake_hash }) => {
+                Message::Tls13HandshakeHash(Tls13HandshakeHash {
+                    handshake_hash,
+                    transcript,
+                }) => {
                     debug!("setting TLS 1.3 application handshake hash");
-                    tls13.validate_transcript_hash(&handshake_hash)?;
+                    tls13.validate_transcript(&transcript, &handshake_hash)?;
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
                     match handshake_hash.len() {
                         32 => {
-                            tls13.set_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash.try_into().unwrap()).await?;
+                            tls13
+                                .set_handshake_hash(
+                                    &mut self.ctx,
+                                    &mut *vm,
+                                    handshake_hash.try_into().unwrap(),
+                                )
+                                .await?;
                             drop(vm);
                             record_layer.setup_tls13(&mut self.ctx).await?;
                             debug!("TLS 1.3 SHA-256 application record layer is ready");
                         }
                         48 => {
-                            tls13.set_sha384_handshake_hash(&mut self.ctx, &mut *vm, handshake_hash.try_into().unwrap()).await?;
-                            let app = tls13.session_keys().sha384_application.as_ref().ok_or_else(|| MpcTlsError::state("SHA-384 application epochs were not installed"))?;
-                            record_layer.setup_tls13_sha384(&mut *vm, &mut self.ctx, app.client.key(), app.client.iv(), app.server.key(), app.server.iv()).await?;
+                            tls13
+                                .set_sha384_handshake_hash(
+                                    &mut self.ctx,
+                                    &mut *vm,
+                                    handshake_hash.try_into().unwrap(),
+                                )
+                                .await?;
+                            let app = tls13
+                                .session_keys()
+                                .sha384_application
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    MpcTlsError::state(
+                                        "SHA-384 application epochs were not installed",
+                                    )
+                                })?;
+                            record_layer
+                                .setup_tls13_sha384(
+                                    &mut *vm,
+                                    &mut self.ctx,
+                                    app.client.key(),
+                                    app.client.iv(),
+                                    app.server.key(),
+                                    app.server.iv(),
+                                )
+                                .await?;
                             debug!("TLS 1.3 SHA-384 application record layer is ready");
                         }
-                        _ => return Err(MpcTlsError::hs("TLS 1.3 handshake hash must be 32 or 48 bytes")),
+                        _ => {
+                            return Err(MpcTlsError::hs(
+                                "TLS 1.3 handshake hash must be 32 or 48 bytes",
+                            ))
+                        }
                     }
                 }
-                Message::Tls13FinishedHash(Tls13FinishedHash { handshake_hash, server }) => {
-                    tls13.validate_transcript_hash(&handshake_hash)?;
+                Message::Tls13FinishedHash(Tls13FinishedHash {
+                    handshake_hash,
+                    transcript,
+                    server,
+                }) => {
+                    tls13.validate_transcript(&transcript, &handshake_hash)?;
+                    if handshake_hash.len() == 32 {
+                        continue;
+                    }
                     let mut vm = vm
                         .try_lock()
                         .map_err(|_| MpcTlsError::other("VM lock is held"))?;
@@ -447,7 +512,9 @@ impl MpcTlsFollower {
                         .sha384_finished_vd(
                             &mut self.ctx,
                             &mut *vm,
-                            handshake_hash.try_into().map_err(|_| MpcTlsError::hs("SHA-384 Finished hash must be 48 bytes"))?,
+                            handshake_hash.try_into().map_err(|_| {
+                                MpcTlsError::hs("SHA-384 Finished hash must be 48 bytes")
+                            })?,
                             server,
                         )
                         .await?;
@@ -469,8 +536,11 @@ impl MpcTlsFollower {
 
                     sf_vd = Some(verify_data.to_vec());
                 }
-                Message::Tls13CertVerify(Tls13CertVerify { transcript_hash }) => {
-                    tls13.validate_transcript_hash(&transcript_hash)?;
+                Message::Tls13CertVerify(Tls13CertVerify {
+                    transcript_hash,
+                    transcript,
+                }) => {
+                    tls13.validate_transcript(&transcript, &transcript_hash)?;
                     let server_ephemeral_key = server_key
                         .clone()
                         .ok_or_else(|| MpcTlsError::state("TLS 1.3 server key is not set"))?

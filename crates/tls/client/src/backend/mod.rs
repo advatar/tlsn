@@ -107,6 +107,7 @@ pub trait Backend: Send {
         &mut self,
         _cert_verify: DigitallySignedStruct,
         _handshake_hash: Vec<u8>,
+        _transcript: Vec<u8>,
     ) -> Result<(), BackendError> {
         Ok(())
     }
@@ -116,17 +117,30 @@ pub trait Backend: Send {
     async fn set_tls13_handshake_hash(
         &mut self,
         _handshake_hash: Vec<u8>,
+        _transcript: Vec<u8>,
     ) -> Result<(), BackendError> {
         Ok(())
     }
     /// Sets handshake hash at ClientKeyExchange for EMS.
     async fn set_hs_hash_client_key_exchange(&mut self, hash: Vec<u8>) -> Result<(), BackendError>;
     /// Sets handshake hash at ServerHello.
-    async fn set_hs_hash_server_hello(&mut self, hash: Vec<u8>) -> Result<(), BackendError>;
+    async fn set_hs_hash_server_hello(
+        &mut self,
+        hash: Vec<u8>,
+        transcript: Option<Vec<u8>>,
+    ) -> Result<(), BackendError>;
     /// Returns expected ServerFinished verify_data.
-    async fn get_server_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError>;
+    async fn get_server_finished_vd(
+        &mut self,
+        hash: Vec<u8>,
+        transcript: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, BackendError>;
     /// Returns ClientFinished verify_data.
-    async fn get_client_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError>;
+    async fn get_client_finished_vd(
+        &mut self,
+        hash: Vec<u8>,
+        transcript: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, BackendError>;
     /// Prepares the backend for encryption.
     async fn prepare_encryption(&mut self) -> Result<(), BackendError>;
     /// Buffer incoming message for decryption.

@@ -375,11 +375,19 @@ impl Backend for RustCryptoBackend {
         Ok(())
     }
 
-    async fn set_hs_hash_server_hello(&mut self, _hash: Vec<u8>) -> Result<(), BackendError> {
+    async fn set_hs_hash_server_hello(
+        &mut self,
+        _hash: Vec<u8>,
+        _transcript: Option<Vec<u8>>,
+    ) -> Result<(), BackendError> {
         Ok(())
     }
 
-    async fn get_server_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError> {
+    async fn get_server_finished_vd(
+        &mut self,
+        hash: Vec<u8>,
+        _transcript: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, BackendError> {
         let ms = self.master_secret.ok_or(BackendError::InvalidState(
             "Master secret not set".to_string(),
         ))?;
@@ -393,7 +401,11 @@ impl Backend for RustCryptoBackend {
         Ok(verify_data.to_vec())
     }
 
-    async fn get_client_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError> {
+    async fn get_client_finished_vd(
+        &mut self,
+        hash: Vec<u8>,
+        _transcript: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, BackendError> {
         let ms = self.master_secret.ok_or(BackendError::InvalidState(
             "Master secret not set".to_string(),
         ))?;

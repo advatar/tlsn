@@ -2,15 +2,15 @@ pub(crate) mod nonce;
 
 use aes_gcm::{aead::AeadInPlace, Aes128Gcm, Aes256Gcm, NewAead};
 use hmac::{Hmac, Mac};
-use hmac_sha256::{Mode, Role as KeyScheduleRole, Tls13KeySched};
 use hmac_sha256::Sha384ApplicationKeys;
+use hmac_sha256::{Mode, Role as KeyScheduleRole, Tls13KeySched};
 use mpz_common::Context;
 use mpz_memory_core::{
     binary::{Binary, U8},
     Array, MemoryExt,
 };
 use mpz_vm_core::Vm as VmTrait;
-use sha2::Sha256;
+use sha2::{Digest, Sha256, Sha384};
 use tls_core::msgs::{
     base::Payload,
     enums::{CipherSuite, ContentType, ProtocolVersion},
@@ -70,8 +70,18 @@ pub struct WriteEpoch<K, I> {
 }
 
 impl<K, I> WriteEpoch<K, I> {
-    pub(crate) fn key(&self) -> K where K: Copy { self.key }
-    pub(crate) fn iv(&self) -> I where I: Copy { self.iv }
+    pub(crate) fn key(&self) -> K
+    where
+        K: Copy,
+    {
+        self.key
+    }
+    pub(crate) fn iv(&self) -> I
+    where
+        I: Copy,
+    {
+        self.iv
+    }
     fn new(epoch: Epoch, generation: u64, key: K, iv: I) -> Self {
         Self {
             epoch,
@@ -108,8 +118,18 @@ impl<K, I> WriteEpoch<K, I> {
 }
 
 impl<K, I> ReadEpoch<K, I> {
-    pub(crate) fn key(&self) -> K where K: Copy { self.key }
-    pub(crate) fn iv(&self) -> I where I: Copy { self.iv }
+    pub(crate) fn key(&self) -> K
+    where
+        K: Copy,
+    {
+        self.key
+    }
+    pub(crate) fn iv(&self) -> I
+    where
+        I: Copy,
+    {
+        self.iv
+    }
 }
 
 /// A TLS 1.3 read-key epoch with an exclusively owned record sequence number.
@@ -260,13 +280,41 @@ impl Tls13KeyState {
         }
     }
 
-    pub(crate) fn validate_transcript_hash(&self, hash: &[u8]) -> Result<SuiteProfile, MpcTlsError> {
+    pub(crate) fn validate_transcript_hash(
+        &self,
+        hash: &[u8],
+    ) -> Result<SuiteProfile, MpcTlsError> {
         let suite = self
             .suite
             .ok_or_else(|| MpcTlsError::state("TLS 1.3 cipher suite is not fixed"))?;
         let profile = suite_profile(suite)?;
         if !transcript_hash_matches(suite, hash.len()) {
-            return Err(MpcTlsError::hs("TLS 1.3 transcript hash width does not match the negotiated suite"));
+            return Err(MpcTlsError::hs(
+                "TLS 1.3 transcript hash width does not match the negotiated suite",
+            ));
+        }
+        Ok(profile)
+    }
+
+    pub(crate) fn validate_transcript(
+        &self,
+        transcript: &[u8],
+        hash: &[u8],
+    ) -> Result<SuiteProfile, MpcTlsError> {
+        let profile = self.validate_transcript_hash(hash)?;
+        let expected = match profile.hash_len {
+            32 => Sha256::digest(transcript).to_vec(),
+            48 => Sha384::digest(transcript).to_vec(),
+            _ => {
+                return Err(MpcTlsError::state(
+                    "unsupported TLS 1.3 transcript hash width",
+                ))
+            }
+        };
+        if expected != hash {
+            return Err(MpcTlsError::hs(
+                "TLS 1.3 callback hash does not match the encoded handshake transcript",
+            ));
         }
         Ok(profile)
     }
@@ -341,9 +389,35 @@ impl Tls13KeyState {
             .await
             .map_err(MpcTlsError::hs)?;
         self.keys.sha384_handshake = Some(Tls13Sha384HandshakeKeys {
-            client: WriteEpoch::new(Epoch::Handshake, 0, client_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake key is unavailable"))?, client_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake IV is unavailable"))?),
+            client: WriteEpoch::new(
+                Epoch::Handshake,
+                0,
+                client_key
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| {
+                        MpcTlsError::hs("SHA-384 client handshake key is unavailable")
+                    })?,
+                client_iv
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake IV is unavailable"))?,
+            ),
             client_finished_key: material.client_finished().map_err(MpcTlsError::from)?,
-            server: ReadEpoch::new(Epoch::Handshake, 0, server_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake key is unavailable"))?, server_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake IV is unavailable"))?),
+            server: ReadEpoch::new(
+                Epoch::Handshake,
+                0,
+                server_key
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| {
+                        MpcTlsError::hs("SHA-384 server handshake key is unavailable")
+                    })?,
+                server_iv
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake IV is unavailable"))?,
+            ),
             server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
         });
         Ok(())
@@ -371,12 +445,7 @@ impl Tls13KeyState {
         let client_iv = application.client_iv().map_err(MpcTlsError::from)?;
         let server_key = application.server_key().map_err(MpcTlsError::from)?;
         let server_iv = application.server_iv().map_err(MpcTlsError::from)?;
-        self.install_sha384_application_keys(
-            client_key,
-            client_iv,
-            server_key,
-            server_iv,
-        );
+        self.install_sha384_application_keys(client_key, client_iv, server_key, server_iv);
         Ok(())
     }
 
@@ -492,12 +561,9 @@ impl Tls13KeyState {
         handshake_secret: Array<U8, 48>,
         transcript_hash: [u8; 48],
     ) -> Result<(), MpcTlsError> {
-        let mut material = hmac_sha256::Sha384HandshakeKeys::alloc(
-            vm,
-            handshake_secret.into(),
-            &transcript_hash,
-        )
-        .map_err(MpcTlsError::from)?;
+        let mut material =
+            hmac_sha256::Sha384HandshakeKeys::alloc(vm, handshake_secret.into(), &transcript_hash)
+                .map_err(MpcTlsError::from)?;
         material.set_context(vm).map_err(MpcTlsError::from)?;
         self.sha384_client_finished = Some(
             hmac_sha256::DeferredFinishedSha384::alloc(
@@ -513,10 +579,18 @@ impl Tls13KeyState {
             )
             .map_err(MpcTlsError::from)?,
         );
-        let mut client_key = vm.decode(material.client_key().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
-        let mut client_iv = vm.decode(material.client_iv().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
-        let mut server_key = vm.decode(material.server_key().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
-        let mut server_iv = vm.decode(material.server_iv().map_err(MpcTlsError::from)?).map_err(MpcTlsError::hs)?;
+        let mut client_key = vm
+            .decode(material.client_key().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
+        let mut client_iv = vm
+            .decode(material.client_iv().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
+        let mut server_key = vm
+            .decode(material.server_key().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
+        let mut server_iv = vm
+            .decode(material.server_iv().map_err(MpcTlsError::from)?)
+            .map_err(MpcTlsError::hs)?;
         mpz_vm_core::Execute::execute_all(vm, ctx)
             .await
             .map_err(MpcTlsError::hs)?;
@@ -524,15 +598,31 @@ impl Tls13KeyState {
             client: WriteEpoch::new(
                 Epoch::Handshake,
                 0,
-                client_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake key is unavailable"))?,
-                client_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake IV is unavailable"))?,
+                client_key
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| {
+                        MpcTlsError::hs("SHA-384 client handshake key is unavailable")
+                    })?,
+                client_iv
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| MpcTlsError::hs("SHA-384 client handshake IV is unavailable"))?,
             ),
             client_finished_key: material.client_finished().map_err(MpcTlsError::from)?,
             server: ReadEpoch::new(
                 Epoch::Handshake,
                 0,
-                server_key.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake key is unavailable"))?,
-                server_iv.try_recv().map_err(MpcTlsError::hs)?.ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake IV is unavailable"))?,
+                server_key
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| {
+                        MpcTlsError::hs("SHA-384 server handshake key is unavailable")
+                    })?,
+                server_iv
+                    .try_recv()
+                    .map_err(MpcTlsError::hs)?
+                    .ok_or_else(|| MpcTlsError::hs("SHA-384 server handshake IV is unavailable"))?,
             ),
             server_finished_key: material.server_finished().map_err(MpcTlsError::from)?,
         });
@@ -921,7 +1011,14 @@ fn encrypt_tls13_record_256(
         tag: Some(tag.to_vec()),
     };
     payload.extend_from_slice(&tag);
-    Ok((OpaqueMessage { typ: ContentType::ApplicationData, version: ProtocolVersion::TLSv1_2, payload: Payload::new(payload) }, record))
+    Ok((
+        OpaqueMessage {
+            typ: ContentType::ApplicationData,
+            version: ProtocolVersion::TLSv1_2,
+            payload: Payload::new(payload),
+        },
+        record,
+    ))
 }
 
 /// AES-256-GCM TLS 1.3 record decryption path.
@@ -933,7 +1030,11 @@ fn decrypt_tls13_record_256(
         return Err(MpcTlsError::hs("unexpected TLS 1.3 record header"));
     }
     let mut payload = msg.payload.0;
-    if payload.len() < 16 { return Err(MpcTlsError::hs("tls13 record payload is shorter than the tag")); }
+    if payload.len() < 16 {
+        return Err(MpcTlsError::hs(
+            "tls13 record payload is shorter than the tag",
+        ));
+    }
     let tag = payload.split_off(payload.len() - 16);
     let ciphertext = payload.clone();
     let aad = make_tls13_aad(payload.len() + 16);
@@ -941,12 +1042,28 @@ fn decrypt_tls13_record_256(
         .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm key initialization failed"))?;
     let seq = epoch.reserve_sequence()?;
     let nonce = make_tls13_nonce(epoch.iv, seq);
-    cipher.decrypt_in_place_detached((&nonce).into(), &aad, &mut payload, tag.as_slice().into())
+    cipher
+        .decrypt_in_place_detached((&nonce).into(), &aad, &mut payload, tag.as_slice().into())
         .map_err(|_| MpcTlsError::hs("tls13 aes-256-gcm record authentication failed"))?;
     let typ = unpad_tls13(&mut payload)?;
     let plaintext = payload;
-    let record = Record { id: None, seq, typ: TranscriptContentType::from(typ), plaintext: Some(plaintext.clone()), explicit_nonce: Vec::new(), ciphertext, tag: Some(tag) };
-    Ok((PlainMessage { typ, version: ProtocolVersion::TLSv1_3, payload: Payload::new(plaintext) }, record))
+    let record = Record {
+        id: None,
+        seq,
+        typ: TranscriptContentType::from(typ),
+        plaintext: Some(plaintext.clone()),
+        explicit_nonce: Vec::new(),
+        ciphertext,
+        tag: Some(tag),
+    };
+    Ok((
+        PlainMessage {
+            typ,
+            version: ProtocolVersion::TLSv1_3,
+            payload: Payload::new(plaintext),
+        },
+        record,
+    ))
 }
 
 fn make_tls13_nonce(iv: [u8; 12], sequence: u64) -> [u8; 12] {
@@ -987,7 +1104,9 @@ fn unpad_tls13(payload: &mut Vec<u8>) -> Result<ContentType, MpcTlsError> {
 
 #[cfg(kani)]
 mod verification {
-    use super::{make_tls13_nonce, suite_profile, transcript_hash_matches, Epoch, ReadEpoch, WriteEpoch};
+    use super::{
+        make_tls13_nonce, suite_profile, transcript_hash_matches, Epoch, ReadEpoch, WriteEpoch,
+    };
     use tls_core::msgs::enums::CipherSuite;
 
     #[kani::proof]
@@ -1076,7 +1195,10 @@ mod verification {
 
 #[cfg(test)]
 mod tests {
-    use super::{decrypt_tls13_record, decrypt_tls13_record_256, encrypt_tls13_record, encrypt_tls13_record_256, ReadEpoch, Tls13KeyState, WriteEpoch};
+    use super::{
+        decrypt_tls13_record, decrypt_tls13_record_256, encrypt_tls13_record,
+        encrypt_tls13_record_256, ReadEpoch, Tls13KeyState, WriteEpoch,
+    };
     use crate::{Epoch, Role};
     use hmac_sha256::Mode;
     use mpz_common::{context::test_st_context, Context};
@@ -1084,7 +1206,10 @@ mod tests {
     use mpz_memory_core::correlated::Delta;
     use mpz_ot::ideal::cot::{ideal_cot, IdealCOTReceiver, IdealCOTSender};
     use mpz_vm_core::{
-        memory::{binary::{Binary, U8}, Array, MemoryExt, ViewExt},
+        memory::{
+            binary::{Binary, U8},
+            Array, MemoryExt, ViewExt,
+        },
         Execute, Vm,
     };
     use rand::{rngs::StdRng, SeedableRng};
@@ -1269,7 +1394,8 @@ mod tests {
         tokio::try_join!(
             state_a.set_sha384_application_keys(&mut ctx_a, &mut vm_a, master_a, transcript),
             state_b.set_sha384_application_keys(&mut ctx_b, &mut vm_b, master_b, transcript),
-        ).unwrap();
+        )
+        .unwrap();
         let state = state_a;
         let keys = state.session_keys().sha384_application.as_ref().unwrap();
         assert_eq!(keys.client.epoch(), Epoch::Application);
@@ -1298,11 +1424,13 @@ mod tests {
         tokio::try_join!(
             state_a.set_sha384_handshake_keys(&mut ctx_a, &mut vm_a, secret_a, transcript),
             state_b.set_sha384_handshake_keys(&mut ctx_b, &mut vm_b, secret_b, transcript),
-        ).unwrap();
+        )
+        .unwrap();
         let (client, server) = tokio::try_join!(
             state_a.sha384_finished_vd(&mut ctx_a, &mut vm_a, transcript, false),
             state_b.sha384_finished_vd(&mut ctx_b, &mut vm_b, transcript, false),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(client, server);
         assert_eq!(client.len(), 48);
     }
@@ -1354,6 +1482,31 @@ mod tests {
         assert!(sha384
             .set_suite(CipherSuite::TLS13_AES_128_GCM_SHA256)
             .is_err());
+    }
+
+    #[test]
+    fn negotiated_suite_recomputes_exact_transcript_hash() {
+        use sha2::{Digest, Sha256, Sha384};
+        use tls_core::msgs::enums::CipherSuite;
+
+        let transcript = b"encoded ClientHello || ServerHello || handshake";
+        let mut sha256 = Tls13KeyState::new(Mode::Normal, Role::Leader);
+        sha256
+            .set_suite(CipherSuite::TLS13_AES_128_GCM_SHA256)
+            .unwrap();
+        assert!(sha256
+            .validate_transcript(transcript, &Sha256::digest(transcript))
+            .is_ok());
+        assert!(sha256.validate_transcript(transcript, &[0; 32]).is_err());
+
+        let mut sha384 = Tls13KeyState::new(Mode::Normal, Role::Leader);
+        sha384
+            .set_suite(CipherSuite::TLS13_AES_256_GCM_SHA384)
+            .unwrap();
+        assert!(sha384
+            .validate_transcript(transcript, &Sha384::digest(transcript))
+            .is_ok());
+        assert!(sha384.validate_transcript(transcript, &[0; 48]).is_err());
     }
 
     #[test]

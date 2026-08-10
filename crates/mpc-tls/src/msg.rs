@@ -98,23 +98,27 @@ pub(crate) struct ServerFinishedVd {
 pub(crate) struct Tls13HelloHash {
     /// Transcript hash bytes; SHA-256 is 32 bytes and SHA-384 is 48 bytes.
     pub(crate) hello_hash: Vec<u8>,
+    pub(crate) transcript: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13HandshakeHash {
     /// Transcript hash bytes; SHA-256 is 32 bytes and SHA-384 is 48 bytes.
     pub(crate) handshake_hash: Vec<u8>,
+    pub(crate) transcript: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13FinishedHash {
     pub(crate) handshake_hash: Vec<u8>,
+    pub(crate) transcript: Vec<u8>,
     pub(crate) server: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Tls13CertVerify {
     pub(crate) transcript_hash: Vec<u8>,
+    pub(crate) transcript: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

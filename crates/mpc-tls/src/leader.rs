@@ -1,10 +1,11 @@
 use crate::{
     error::MpcTlsError,
     msg::{
-        ClientFinishedVd, Decrypt, Encrypt, Message, ServerFinishedVd, SetClientRandom,
-        SetCipherSuite, SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake, Tls13CertVerify,
-        Tls13ClientFinishedVd, Tls13DecryptApplication, Tls13EncryptApplication,
-        Tls13FinishedHash, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage, Tls13ServerFinishedVd,
+        ClientFinishedVd, Decrypt, Encrypt, Message, ServerFinishedVd, SetCipherSuite,
+        SetClientRandom, SetProtocolVersion, SetServerKey, SetServerRandom, StartHandshake,
+        Tls13CertVerify, Tls13ClientFinishedVd, Tls13DecryptApplication, Tls13EncryptApplication,
+        Tls13FinishedHash, Tls13HandshakeHash, Tls13HelloHash, Tls13RecordMessage,
+        Tls13ServerFinishedVd,
     },
     record_layer::{
         aead::MpcAesGcm, DecryptMode as RecordDecryptMode, EncryptMode as RecordEncryptMode,
@@ -565,7 +566,8 @@ impl Backend for MpcTlsLeader {
             cipher_suite,
             tls13,
             ..
-        } = &mut self.state else {
+        } = &mut self.state
+        else {
             return Err(
                 MpcTlsError::state("must be in handshake state to set cipher suite").into(),
             );
@@ -793,11 +795,15 @@ impl Backend for MpcTlsLeader {
         &mut self,
         cert_verify: DigitallySignedStruct,
         handshake_hash: Vec<u8>,
+        transcript: Vec<u8>,
     ) -> Result<(), BackendError> {
         let State::Handshake { tls13, .. } = &self.state else {
-            return Err(MpcTlsError::state("must be in handshake state for TLS 1.3 CertificateVerify").into());
+            return Err(MpcTlsError::state(
+                "must be in handshake state for TLS 1.3 CertificateVerify",
+            )
+            .into());
         };
-        tls13.validate_transcript_hash(&handshake_hash)?;
+        tls13.validate_transcript(&transcript, &handshake_hash)?;
         let transcript_hash = handshake_hash;
 
         let State::Handshake {
@@ -840,6 +846,7 @@ impl Backend for MpcTlsLeader {
         ctx.io_mut()
             .send(Message::Tls13CertVerify(Tls13CertVerify {
                 transcript_hash,
+                transcript,
             }))
             .await
             .map_err(MpcTlsError::from)?;
@@ -850,6 +857,7 @@ impl Backend for MpcTlsLeader {
     async fn set_tls13_handshake_hash(
         &mut self,
         handshake_hash: Vec<u8>,
+        transcript: Vec<u8>,
     ) -> Result<(), BackendError> {
         let State::Handshake {
             ctx,
@@ -865,10 +873,11 @@ impl Backend for MpcTlsLeader {
 
         if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
             debug!("setting TLS 1.3 application handshake hash");
-            tls13.validate_transcript_hash(&handshake_hash)?;
+            tls13.validate_transcript(&transcript, &handshake_hash)?;
             ctx.io_mut()
                 .send(Message::Tls13HandshakeHash(Tls13HandshakeHash {
                     handshake_hash: handshake_hash.clone(),
+                    transcript,
                 }))
                 .await
                 .map_err(MpcTlsError::from)?;
@@ -878,18 +887,47 @@ impl Backend for MpcTlsLeader {
                 .map_err(|_| MpcTlsError::hs("VM lock is held"))?;
             match handshake_hash.len() {
                 32 => {
-                    tls13.set_handshake_hash(ctx, &mut *vm, handshake_hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?;
+                    tls13
+                        .set_handshake_hash(ctx, &mut *vm, handshake_hash.try_into().unwrap())
+                        .await
+                        .map_err(MpcTlsError::hs)?;
                     drop(vm);
                     record_layer.setup_tls13(ctx).await?;
                     debug!("TLS 1.3 SHA-256 application record layer is ready");
                 }
                 48 => {
-                    tls13.set_sha384_handshake_hash(ctx, &mut *vm, handshake_hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?;
-                    let app = tls13.session_keys().sha384_application.as_ref().ok_or_else(|| MpcTlsError::state("SHA-384 application epochs were not installed"))?;
-                    record_layer.setup_tls13_sha384(&mut *vm, ctx, app.client.key(), app.client.iv(), app.server.key(), app.server.iv()).await?;
+                    tls13
+                        .set_sha384_handshake_hash(
+                            ctx,
+                            &mut *vm,
+                            handshake_hash.try_into().unwrap(),
+                        )
+                        .await
+                        .map_err(MpcTlsError::hs)?;
+                    let app = tls13
+                        .session_keys()
+                        .sha384_application
+                        .as_ref()
+                        .ok_or_else(|| {
+                            MpcTlsError::state("SHA-384 application epochs were not installed")
+                        })?;
+                    record_layer
+                        .setup_tls13_sha384(
+                            &mut *vm,
+                            ctx,
+                            app.client.key(),
+                            app.client.iv(),
+                            app.server.key(),
+                            app.server.iv(),
+                        )
+                        .await?;
                     debug!("TLS 1.3 SHA-384 application record layer is ready");
                 }
-                _ => return Err(MpcTlsError::hs("TLS 1.3 handshake hash must be 32 or 48 bytes").into()),
+                _ => {
+                    return Err(
+                        MpcTlsError::hs("TLS 1.3 handshake hash must be 32 or 48 bytes").into(),
+                    )
+                }
             }
         }
 
@@ -903,7 +941,11 @@ impl Backend for MpcTlsLeader {
         Ok(())
     }
 
-    async fn set_hs_hash_server_hello(&mut self, hash: Vec<u8>) -> Result<(), BackendError> {
+    async fn set_hs_hash_server_hello(
+        &mut self,
+        hash: Vec<u8>,
+        transcript: Option<Vec<u8>>,
+    ) -> Result<(), BackendError> {
         let State::Handshake {
             ctx,
             vm,
@@ -916,9 +958,15 @@ impl Backend for MpcTlsLeader {
         };
 
         if protocol_version == &Some(ProtocolVersion::TLSv1_3) {
+            let transcript = transcript
+                .ok_or_else(|| MpcTlsError::hs("missing TLS 1.3 ServerHello transcript"))?;
+            tls13.validate_transcript(&transcript, &hash)?;
             debug!("setting TLS 1.3 hello hash");
             ctx.io_mut()
-                .send(Message::Tls13HelloHash(Tls13HelloHash { hello_hash: hash.clone() }))
+                .send(Message::Tls13HelloHash(Tls13HelloHash {
+                    hello_hash: hash.clone(),
+                    transcript,
+                }))
                 .await
                 .map_err(MpcTlsError::from)?;
 
@@ -927,9 +975,17 @@ impl Backend for MpcTlsLeader {
                 .map_err(|_| MpcTlsError::other("VM lock is held"))?;
             tls13.validate_transcript_hash(&hash)?;
             match hash.len() {
-                32 => tls13.set_hello_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
-                48 => tls13.set_sha384_hello_hash(ctx, &mut *vm, hash.try_into().unwrap()).await.map_err(MpcTlsError::hs)?,
-                _ => return Err(MpcTlsError::hs("TLS 1.3 hello hash must be 32 or 48 bytes").into()),
+                32 => tls13
+                    .set_hello_hash(ctx, &mut *vm, hash.try_into().unwrap())
+                    .await
+                    .map_err(MpcTlsError::hs)?,
+                48 => tls13
+                    .set_sha384_hello_hash(ctx, &mut *vm, hash.try_into().unwrap())
+                    .await
+                    .map_err(MpcTlsError::hs)?,
+                _ => {
+                    return Err(MpcTlsError::hs("TLS 1.3 hello hash must be 32 or 48 bytes").into())
+                }
             }
             debug!("TLS 1.3 application AEAD circuits preallocated");
             debug!("TLS 1.3 hello hash set");
@@ -939,7 +995,11 @@ impl Backend for MpcTlsLeader {
     }
 
     #[instrument(level = "debug", skip_all, err)]
-    async fn get_server_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError> {
+    async fn get_server_finished_vd(
+        &mut self,
+        hash: Vec<u8>,
+        transcript: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, BackendError> {
         if hash.len() == 48 {
             let hash: [u8; 48] = hash.try_into().expect("checked SHA-384 hash length");
             match &mut self.state {
@@ -951,10 +1011,14 @@ impl Backend for MpcTlsLeader {
                     protocol_version: Some(ProtocolVersion::TLSv1_3),
                     ..
                 } => {
-                    tls13.validate_transcript_hash(&hash)?;
+                    let transcript = transcript.ok_or_else(|| {
+                        MpcTlsError::hs("missing TLS 1.3 server Finished transcript")
+                    })?;
+                    tls13.validate_transcript(&transcript, &hash)?;
                     ctx.io_mut()
                         .send(Message::Tls13FinishedHash(Tls13FinishedHash {
                             handshake_hash: hash.to_vec(),
+                            transcript,
                             server: true,
                         }))
                         .await
@@ -975,7 +1039,12 @@ impl Backend for MpcTlsLeader {
                         .map_err(MpcTlsError::from)?;
                     return Ok(vd.to_vec());
                 }
-                _ => return Err(MpcTlsError::state("must be in a tls13 handshake for SHA-384 Finished").into()),
+                _ => {
+                    return Err(MpcTlsError::state(
+                        "must be in a tls13 handshake for SHA-384 Finished",
+                    )
+                    .into())
+                }
             }
         }
         let hash: [u8; 32] = hash
@@ -991,7 +1060,17 @@ impl Backend for MpcTlsLeader {
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             } => {
-                tls13.validate_transcript_hash(&hash)?;
+                let transcript = transcript
+                    .ok_or_else(|| MpcTlsError::hs("missing TLS 1.3 server Finished transcript"))?;
+                tls13.validate_transcript(&transcript, &hash)?;
+                ctx.io_mut()
+                    .send(Message::Tls13FinishedHash(Tls13FinishedHash {
+                        handshake_hash: hash.to_vec(),
+                        transcript,
+                        server: true,
+                    }))
+                    .await
+                    .map_err(MpcTlsError::from)?;
                 let vd = tls13.server_finished_vd(hash).map_err(MpcTlsError::hs)?;
                 *sf_vd = Some(vd.to_vec());
                 ctx.io_mut()
@@ -1046,7 +1125,11 @@ impl Backend for MpcTlsLeader {
     }
 
     #[instrument(level = "debug", skip_all, err)]
-    async fn get_client_finished_vd(&mut self, hash: Vec<u8>) -> Result<Vec<u8>, BackendError> {
+    async fn get_client_finished_vd(
+        &mut self,
+        hash: Vec<u8>,
+        transcript: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, BackendError> {
         if hash.len() == 48 {
             let hash: [u8; 48] = hash.try_into().expect("checked SHA-384 hash length");
             match &mut self.state {
@@ -1058,10 +1141,14 @@ impl Backend for MpcTlsLeader {
                     protocol_version: Some(ProtocolVersion::TLSv1_3),
                     ..
                 } => {
-                    tls13.validate_transcript_hash(&hash)?;
+                    let transcript = transcript.ok_or_else(|| {
+                        MpcTlsError::hs("missing TLS 1.3 client Finished transcript")
+                    })?;
+                    tls13.validate_transcript(&transcript, &hash)?;
                     ctx.io_mut()
                         .send(Message::Tls13FinishedHash(Tls13FinishedHash {
                             handshake_hash: hash.to_vec(),
+                            transcript,
                             server: false,
                         }))
                         .await
@@ -1083,7 +1170,12 @@ impl Backend for MpcTlsLeader {
                         .map_err(MpcTlsError::from)?;
                     return Ok(vd.to_vec());
                 }
-                _ => return Err(MpcTlsError::state("must be in a tls13 handshake for SHA-384 Finished").into()),
+                _ => {
+                    return Err(MpcTlsError::state(
+                        "must be in a tls13 handshake for SHA-384 Finished",
+                    )
+                    .into())
+                }
             }
         }
         let hash: [u8; 32] = hash
@@ -1099,7 +1191,17 @@ impl Backend for MpcTlsLeader {
                 protocol_version: Some(ProtocolVersion::TLSv1_3),
                 ..
             } => {
-                tls13.validate_transcript_hash(&hash)?;
+                let transcript = transcript
+                    .ok_or_else(|| MpcTlsError::hs("missing TLS 1.3 client Finished transcript"))?;
+                tls13.validate_transcript(&transcript, &hash)?;
+                ctx.io_mut()
+                    .send(Message::Tls13FinishedHash(Tls13FinishedHash {
+                        handshake_hash: hash.to_vec(),
+                        transcript,
+                        server: false,
+                    }))
+                    .await
+                    .map_err(MpcTlsError::from)?;
                 let vd = tls13.client_finished_vd(hash).map_err(MpcTlsError::hs)?;
                 *cf_vd = Some(vd.to_vec());
                 ctx.io_mut()

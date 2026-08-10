@@ -799,7 +799,7 @@ impl State<ClientConnectionData> for ExpectServerDone {
         let cf = cx
             .common
             .backend
-            .get_client_finished_vd(hs.as_ref().to_vec())
+            .get_client_finished_vd(hs.as_ref().to_vec(), None)
             .await?;
         emit_finished(&cf, &mut transcript, cx.common).await?;
 
@@ -950,7 +950,7 @@ impl State<ClientConnectionData> for ExpectFinished {
         let expect_verify_data = cx
             .common
             .backend
-            .get_server_finished_vd(vh.as_ref().to_vec())
+            .get_server_finished_vd(vh.as_ref().to_vec(), None)
             .await?;
 
         // Constant-time verification of this is relatively unimportant: they only

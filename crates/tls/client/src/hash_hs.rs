@@ -74,6 +74,7 @@ impl HandshakeHashBuffer {
         ctx.update(&self.buffer);
         HandshakeHash {
             ctx,
+            audit: self.buffer.clone(),
             client_auth: match self.client_auth_enabled {
                 true => Some(self.buffer),
                 false => None,
@@ -92,6 +93,10 @@ impl HandshakeHashBuffer {
 pub(crate) struct HandshakeHash {
     /// None before we know what hash function we're using
     ctx: digest::Context,
+
+    /// Exact handshake encodings consumed by `ctx`, retained for independent
+    /// refinement checks at the MPC boundary.
+    audit: Vec<u8>,
 
     /// buffer for client-auth.
     client_auth: Option<Vec<u8>>,
@@ -116,6 +121,7 @@ impl HandshakeHash {
     /// Hash or buffer a byte slice.
     fn update_raw(&mut self, buf: &[u8]) -> &mut Self {
         self.ctx.update(buf);
+        self.audit.extend_from_slice(buf);
 
         if let Some(buffer) = &mut self.client_auth {
             buffer.extend_from_slice(buf);
@@ -154,12 +160,19 @@ impl HandshakeHash {
         let old_handshake_hash_msg =
             HandshakeMessagePayload::build_handshake_hash(old_hash.as_ref());
 
-        self.update_raw(&old_handshake_hash_msg.get_encoding());
+        let encoding = old_handshake_hash_msg.get_encoding();
+        self.audit.clear();
+        self.update_raw(&encoding);
     }
 
     /// Get the current hash value.
     pub(crate) fn get_current_hash(&self) -> digest::Digest {
         self.ctx.clone().finish()
+    }
+
+    /// Returns the exact encoded handshake bytes represented by the current hash.
+    pub(crate) fn transcript_bytes(&self) -> &[u8] {
+        &self.audit
     }
 
     /// Takes this object's buffer containing all handshake messages
@@ -189,6 +202,7 @@ mod test {
         let mut hh = hhb.start_hash(&HashAlgorithm::SHA256);
         assert!(hh.client_auth.is_none());
         hh.update_raw(b"world");
+        assert_eq!(hh.transcript_bytes(), b"helloworld");
         let h = hh.get_current_hash();
         let h = h.as_ref();
         assert_eq!(h[0], 0x93);

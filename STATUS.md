@@ -7,10 +7,11 @@
 - [x] Machine-check record-layer executability, key secrecy, authenticated release, replay resistance, and nonce-uniqueness lemmas.
 - [x] Extend the symbolic model through certificate/handshake authentication, transcript agreement, and commitment-based presentation acceptance.
 - [x] Add a symbolic TLS 1.3 HKDF/Finished/application-secret boundary model.
-- [ ] Prove concrete TLS 1.3 HKDF/parser refinement against the Rust implementation.
+- [x] Prove concrete TLS 1.3 HKDF/parser refinement against the Rust implementation.
   - [x] Bind negotiated suite to an explicit live hash/key-width profile shared by leader and follower; reject transcript-width confusion.
   - [x] Machine-check the concrete HKDF label encoder, including RFC 8446 length bounds and bytes.
-  - [ ] Connect parsed handshake transcript bytes and CertificateVerify/Finished hashes to that negotiated profile.
+  - [x] Connect parsed handshake transcript bytes and CertificateVerify/Finished hashes to that negotiated profile.
+    - [x] Retain the exact encoded handshake transcript and independently recompute every MPC callback hash under the negotiated suite.
 - [x] Document the fail-closed TLS 1.3 cipher-suite capability boundary and AES-256/ChaCha20 generalization plan.
 - [x] Add a clear SHA-384 HKDF/HkdfLabel reference oracle for future MPC equivalence tests.
 - [x] Integrate the serialized MPZ-compatible SHA-384 compression circuit into secret-shared HMAC/HKDF.

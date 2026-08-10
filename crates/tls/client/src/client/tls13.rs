@@ -120,7 +120,10 @@ pub(super) async fn handle_server_hello(
 
     cx.common
         .backend
-        .set_hs_hash_server_hello(transcript.get_current_hash().as_ref().to_vec())
+        .set_hs_hash_server_hello(
+            transcript.get_current_hash().as_ref().to_vec(),
+            Some(transcript.transcript_bytes().to_vec()),
+        )
         .await?;
 
     // Decrypt with the peer's key, encrypt with our own key
@@ -547,7 +550,11 @@ impl State<ClientConnectionData> for ExpectCertificateVerify {
 
         cx.common
             .backend
-            .set_tls13_server_cert_verify(cert_verify.clone(), handshake_hash.as_ref().to_vec())
+            .set_tls13_server_cert_verify(
+                cert_verify.clone(),
+                handshake_hash.as_ref().to_vec(),
+                self.transcript.transcript_bytes().to_vec(),
+            )
             .await?;
 
         cx.common.peer_certificates = Some(self.server_cert.cert_chain().to_vec());
@@ -682,7 +689,10 @@ impl State<ClientConnectionData> for ExpectFinished {
         let expect_verify_data = cx
             .common
             .backend
-            .get_server_finished_vd(handshake_hash.as_ref().to_vec())
+            .get_server_finished_vd(
+                handshake_hash.as_ref().to_vec(),
+                Some(st.transcript.transcript_bytes().to_vec()),
+            )
             .await?;
 
         #[allow(deprecated)]
@@ -702,7 +712,10 @@ impl State<ClientConnectionData> for ExpectFinished {
         st.transcript.add_message(&m);
         cx.common
             .backend
-            .set_tls13_handshake_hash(st.transcript.get_current_hash().as_ref().to_vec())
+            .set_tls13_handshake_hash(
+                st.transcript.get_current_hash().as_ref().to_vec(),
+                st.transcript.transcript_bytes().to_vec(),
+            )
             .await?;
 
         /* The EndOfEarlyData message to server is still encrypted with early data
@@ -748,7 +761,10 @@ impl State<ClientConnectionData> for ExpectFinished {
         let client_finished = cx
             .common
             .backend
-            .get_client_finished_vd(handshake_hash.as_ref().to_vec())
+            .get_client_finished_vd(
+                handshake_hash.as_ref().to_vec(),
+                Some(st.transcript.transcript_bytes().to_vec()),
+            )
             .await?;
         emit_finished_tls13(&client_finished, &mut st.transcript, cx.common).await?;
 
