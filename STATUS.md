@@ -223,3 +223,10 @@ profile under an accredited issuer trust framework.
   - [x] Seven affected Rust tests, six Swift package tests, the complete five-slice XCFramework
         rebuild, and touched-crate Clippy pass locally; repository-wide/transitive
         Clippy remains blocked by pre-existing HMAC and C-ABI lints outside this change.
+
+## TLS 1.3 marketing site
+
+- [x] Replace the Lovable placeholder with a responsive TLSNotary TLS 1.3 marketing page.
+- [x] Highlight the machine-checked Tamarin and Lean verification boundaries without overstating them.
+- [x] Link visitors to the GitHub implementation, formal artifacts, and reproducibility instructions.
+- [x] Verify the production build and commit the landing-page changes.
