@@ -1,5 +1,11 @@
 # STATUS
 
+## CR-017 — Manuscript author attribution
+
+- [x] Replace the temporary anonymous-author label with Johan Sellström in the manuscript source.
+- [x] Rebuild the HTML, LaTeX, and PDF artifacts and visually verify the updated title page.
+- [x] Commit only the author-attribution source and generated artifacts.
+
 ## CR-016 — TLS 1.3 authenticated-release-to-attestation binding
 
 - [x] Preserve VM references to the exact TLS 1.3 inner plaintext used by joint encryption and produced by authenticated joint decryption.

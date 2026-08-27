@@ -1,7 +1,7 @@
 ---
 title: "Toward Formally Verified TLS 1.3 Notarization: Joint Record Protection and Authenticated Release"
 author:
-  - "Anonymous authors (research draft)"
+  - "Johan Sellström"
 date: "2026"
 abstract: |
   TLS notarization lets a client prove the provenance of selectively disclosed
