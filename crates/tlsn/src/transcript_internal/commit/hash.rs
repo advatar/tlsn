@@ -207,7 +207,9 @@ fn hash_commit_inner(
                 };
 
                 for range in idx.iter() {
-                    hasher.update(&refs.get(range).expect("plaintext refs are valid"));
+                    for plaintext_ref in refs.get_all(range).expect("plaintext refs are valid") {
+                        hasher.update(&plaintext_ref);
+                    }
                 }
 
                 hasher.update(&blinder);
@@ -232,9 +234,11 @@ fn hash_commit_inner(
                 };
 
                 for range in idx.iter() {
-                    hasher
-                        .update(vm, &refs.get(range).expect("plaintext refs are valid"))
-                        .map_err(HashCommitError::hasher)?;
+                    for plaintext_ref in refs.get_all(range).expect("plaintext refs are valid") {
+                        hasher
+                            .update(vm, &plaintext_ref)
+                            .map_err(HashCommitError::hasher)?;
+                    }
                 }
                 hasher
                     .update(vm, &blinder)
@@ -261,9 +265,11 @@ fn hash_commit_inner(
                 };
 
                 for range in idx.iter() {
-                    hasher
-                        .update(vm, &refs.get(range).expect("plaintext refs are valid"))
-                        .map_err(HashCommitError::hasher)?;
+                    for plaintext_ref in refs.get_all(range).expect("plaintext refs are valid") {
+                        hasher
+                            .update(vm, &plaintext_ref)
+                            .map_err(HashCommitError::hasher)?;
+                    }
                 }
 
                 hasher

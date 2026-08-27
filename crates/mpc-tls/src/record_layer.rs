@@ -9,12 +9,13 @@ use std::{collections::VecDeque, mem::take, sync::Arc};
 
 use aead::MpcAesGcm;
 use futures::TryFutureExt;
+use mpz_circuits::circuits::xor;
 use mpz_common::{Context, Task};
 use mpz_memory_core::{
     binary::{Binary, U8},
-    Array, MemoryExt,
+    Array, MemoryExt, ViewExt,
 };
-use mpz_vm_core::Vm as VmTrait;
+use mpz_vm_core::{Call, CallableExt, Vm as VmTrait};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tls_core::{
@@ -30,7 +31,7 @@ use tracing::{debug, instrument};
 
 use crate::{
     record_layer::{aes_gcm::AesGcm, decrypt::DecryptOp, encrypt::EncryptOp},
-    MpcTlsError, Role, Vm,
+    MpcTlsError, Role, Tls13PlaintextRef, Tls13PlaintextRefs, Vm,
 };
 pub(crate) use decrypt::DecryptMode;
 pub(crate) use encrypt::EncryptMode;
@@ -112,6 +113,11 @@ pub(crate) struct RecordLayer {
     max_recv_records: usize,
     tls13_aes256: bool,
     tls13_session_id: Option<SessionId>,
+    tls13_plaintext_refs: Tls13PlaintextRefs,
+    tls13_sent_refs_bound: usize,
+    tls13_recv_refs_bound: usize,
+    tls13_sent_binding_started: bool,
+    tls13_recv_binding_started: bool,
 
     encrypt_buffer: Vec<EncryptOp>,
     decrypt_buffer: Vec<DecryptOp>,
@@ -141,6 +147,11 @@ impl RecordLayer {
             max_recv_records: 0,
             tls13_aes256: false,
             tls13_session_id: None,
+            tls13_plaintext_refs: Tls13PlaintextRefs::default(),
+            tls13_sent_refs_bound: 0,
+            tls13_recv_refs_bound: 0,
+            tls13_sent_binding_started: false,
+            tls13_recv_binding_started: false,
             encrypt_buffer: Vec::new(),
             decrypt_buffer: Vec::new(),
             encrypted_buffer: VecDeque::new(),
@@ -357,6 +368,92 @@ impl RecordLayer {
         }
     }
 
+    pub(crate) fn tls13_plaintext_refs(&self) -> Tls13PlaintextRefs {
+        self.tls13_plaintext_refs.clone()
+    }
+
+    /// Binds the next application-epoch record handoff to its retained VM reference.
+    /// Returns `false` for handshake records, which do not use the joint application AEAD.
+    pub(crate) fn bind_tls13_record(
+        &mut self,
+        direction: Direction,
+        record: &Record,
+    ) -> Result<bool, MpcTlsError> {
+        let refs = self.tls13_plaintext_refs.records();
+        let (bound, started) = match direction {
+            Direction::Sent => (
+                &mut self.tls13_sent_refs_bound,
+                &mut self.tls13_sent_binding_started,
+            ),
+            Direction::Received => (
+                &mut self.tls13_recv_refs_bound,
+                &mut self.tls13_recv_binding_started,
+            ),
+        };
+        let Some(reference) = refs
+            .iter()
+            .filter(|reference| reference.direction() == direction)
+            .nth(*bound)
+        else {
+            if *started || record.typ == tlsn_core::transcript::ContentType::ApplicationData {
+                return Err(MpcTlsError::record_layer(
+                    "TLS 1.3 application record handoff has no authenticated plaintext reference",
+                ));
+            }
+            return Ok(false);
+        };
+
+        if reference.sequence() != record.seq {
+            return Err(MpcTlsError::record_layer(
+                "TLS 1.3 record handoff sequence does not match authenticated plaintext",
+            ));
+        }
+        if record.id.is_some()
+            || !record.explicit_nonce.is_empty()
+            || record.tag.as_ref().is_none_or(|tag| tag.len() != 16)
+            || record.ciphertext.len() != reference.inner_plaintext().len()
+        {
+            return Err(MpcTlsError::record_layer(
+                "TLS 1.3 record handoff metadata does not match authenticated plaintext",
+            ));
+        }
+        let plaintext_len = record
+            .plaintext
+            .as_ref()
+            .ok_or_else(|| MpcTlsError::record_layer("TLS 1.3 record plaintext is missing"))?
+            .len();
+        if plaintext_len
+            .checked_add(1)
+            .is_none_or(|inner_len| inner_len > reference.inner_plaintext().len())
+        {
+            return Err(MpcTlsError::record_layer(
+                "TLS 1.3 record plaintext exceeds authenticated inner plaintext",
+            ));
+        }
+
+        *bound += 1;
+        *started = true;
+        Ok(true)
+    }
+
+    pub(crate) fn ensure_tls13_record_bindings(&self) -> Result<(), MpcTlsError> {
+        let refs = self.tls13_plaintext_refs.records();
+        let sent = refs
+            .iter()
+            .filter(|reference| reference.direction() == Direction::Sent)
+            .count();
+        let recv = refs
+            .iter()
+            .filter(|reference| reference.direction() == Direction::Received)
+            .count();
+        if sent != self.tls13_sent_refs_bound || recv != self.tls13_recv_refs_bound {
+            return Err(MpcTlsError::record_layer(
+                "TLS 1.3 authenticated plaintext was not bound to every record handoff",
+            ));
+        }
+        Ok(())
+    }
+
     fn release_context(&self, direction: Direction, sequence: u64) -> Result<Vec<u8>, MpcTlsError> {
         let id = RecordId {
             session_id: self
@@ -431,7 +528,7 @@ impl RecordLayer {
         ctx: &mut Context,
         vm: Vm,
         _iv: Array<U8, 12>,
-        _sequence: u64,
+        sequence: u64,
         plaintext: Option<Vec<u8>>,
         len: usize,
         aad: Vec<u8>,
@@ -444,7 +541,7 @@ impl RecordLayer {
             .try_lock()
             .map_err(|_| MpcTlsError::record_layer("encrypt lock is held"))?;
 
-        let (leader_input, follower_input, output, j0) = encrypter
+        let (leader_input, follower_input, plaintext_ref, output, j0) = encrypter
             .take_tls13_record(len, self.tls13_aes256)
             .map_err(MpcTlsError::record_layer)?;
         let (local_input, mut local_value) = match self.role {
@@ -490,6 +587,12 @@ impl RecordLayer {
             .ok_or_else(|| MpcTlsError::record_layer("TLS 1.3 ciphertext is not ready"))?;
         let tag = tags.and_then(|mut tags| tags.pop());
 
+        self.tls13_plaintext_refs.push(Tls13PlaintextRef::new(
+            Direction::Sent,
+            sequence,
+            plaintext_ref,
+        ));
+
         Ok((ciphertext, tag))
     }
 
@@ -516,7 +619,7 @@ impl RecordLayer {
             .try_lock()
             .map_err(|_| MpcTlsError::record_layer("decrypt lock is held"))?;
 
-        let (leader_mask, follower_mask, masked_keystream, j0) = decrypter
+        let (leader_mask, follower_mask, mask_input, masked_keystream, j0) = decrypter
             .take_tls13_record(ciphertext.len(), self.tls13_aes256)
             .map_err(MpcTlsError::record_layer)?;
         let local_mask = match self.role {
@@ -529,6 +632,33 @@ impl RecordLayer {
             .map_err(MpcTlsError::record_layer)?;
         vm.commit(leader_mask).map_err(MpcTlsError::record_layer)?;
         vm.commit(follower_mask)
+            .map_err(MpcTlsError::record_layer)?;
+        let ciphertext_ref = vm
+            .alloc_vec::<U8>(ciphertext.len())
+            .map_err(MpcTlsError::record_layer)?;
+        vm.mark_public(ciphertext_ref)
+            .map_err(MpcTlsError::record_layer)?;
+        vm.assign(ciphertext_ref, ciphertext.clone())
+            .map_err(MpcTlsError::record_layer)?;
+        vm.commit(ciphertext_ref)
+            .map_err(MpcTlsError::record_layer)?;
+        let keystream: mpz_memory_core::Vector<U8> = vm
+            .call(
+                Call::builder(Arc::new(xor(ciphertext.len() * 8)))
+                    .arg(masked_keystream)
+                    .arg(mask_input)
+                    .build()
+                    .map_err(MpcTlsError::record_layer)?,
+            )
+            .map_err(MpcTlsError::record_layer)?;
+        let plaintext_ref: mpz_memory_core::Vector<U8> = vm
+            .call(
+                Call::builder(Arc::new(xor(ciphertext.len() * 8)))
+                    .arg(ciphertext_ref)
+                    .arg(keystream)
+                    .build()
+                    .map_err(MpcTlsError::record_layer)?,
+            )
             .map_err(MpcTlsError::record_layer)?;
         let mut masked_fut = vm
             .decode(masked_keystream)
@@ -556,6 +686,11 @@ impl RecordLayer {
             .try_recv()
             .map_err(MpcTlsError::record_layer)?
             .ok_or_else(|| MpcTlsError::record_layer("TLS 1.3 plaintext mask is not ready"))?;
+        self.tls13_plaintext_refs.push(Tls13PlaintextRef::new(
+            Direction::Received,
+            sequence,
+            plaintext_ref,
+        ));
         if self.role == Role::Follower {
             return Ok(None);
         }

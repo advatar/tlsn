@@ -164,6 +164,7 @@ impl MpcTlsFollower {
             server_write_key: keys.server_write_key,
             server_write_iv: keys.server_iv,
             server_write_mac_key: sw_mac_key,
+            tls13_plaintext_refs: record_layer.tls13_plaintext_refs(),
         };
 
         self.state = State::Setup {
@@ -554,9 +555,13 @@ impl MpcTlsFollower {
                     tls13_cert_verify_transcript_hash = Some(transcript_hash);
                 }
                 Message::Tls13SendRecord(Tls13RecordMessage { record }) => {
+                    record_layer
+                        .bind_tls13_record(tlsn_core::transcript::Direction::Sent, &record)?;
                     tls13_sent_records.push(record);
                 }
                 Message::Tls13RecvRecord(Tls13RecordMessage { record }) => {
+                    record_layer
+                        .bind_tls13_record(tlsn_core::transcript::Direction::Received, &record)?;
                     tls13_recv_records.push(record);
                 }
                 Message::Tls13EncryptApplication(Tls13EncryptApplication {
@@ -636,6 +641,7 @@ impl MpcTlsFollower {
             record_layer
                 .finalize_tls13(&mut self.ctx, vm.clone())
                 .await?;
+            record_layer.ensure_tls13_record_bindings()?;
         }
 
         let time = time.ok_or(MpcTlsError::hs("time was not set"))?;

@@ -1,5 +1,14 @@
 # STATUS
 
+## CR-016 — TLS 1.3 authenticated-release-to-attestation binding
+
+- [x] Preserve VM references to the exact TLS 1.3 inner plaintext used by joint encryption and produced by authenticated joint decryption.
+- [x] Make TLS 1.3 transcript reveal and hash commitments consume those retained references, including an authenticated content-type and padding boundary.
+- [x] Reject incomplete or misaligned TLS 1.3 record/reference handoffs instead of marking records authenticated unconditionally.
+- [x] Add an adversarial regression test proving a mutated `Tls13RecvRecord` cannot be committed or attested.
+- [x] Add a complete TLS 1.3 signed-attestation to presentation to independent-verification test.
+- [x] Document and test the concrete release-to-commit refinement boundary, then run the focused and full validation suites.
+
 ## CR-015 — Publication PDF layout
 
 - [x] Produce a paginated, publication-width PDF directly from the LaTeX manuscript rather than browser-printing the HTML artifact.

@@ -8,7 +8,7 @@ use tlsn::{
         tls_commit::{TlsCommitConfig, mpc::MpcTlsConfig},
         verifier::VerifierConfig,
     },
-    connection::{ServerName, TlsVersion},
+    connection::{ConnectionInfo, HandshakeData, ServerEphemKey, ServerName, TlsVersion},
     hash::HashAlgId,
     prover::Prover,
     transcript::{Direction, Transcript, TranscriptCommitConfig, TranscriptCommitmentKind},
@@ -36,6 +36,17 @@ pub struct Tls13TestCase {
     pub client_auth: Option<(Vec<CertificateDer>, PrivateKeyDer)>,
     pub request_path: &'static str,
     pub request_headers: Vec<(&'static str, &'static str)>,
+}
+
+#[allow(dead_code)]
+pub struct Tls13RunArtifacts {
+    pub server_name: ServerName,
+    pub handshake_data: HandshakeData,
+    pub connection_info: ConnectionInfo,
+    pub server_ephemeral_key: ServerEphemKey,
+    pub transcript: Transcript,
+    pub prover_output: ProverOutput,
+    pub verifier_output: VerifierOutput,
 }
 
 impl Tls13TestCase {
@@ -73,7 +84,21 @@ impl Tls13TestCase {
     }
 }
 
+#[allow(dead_code)]
 pub async fn run_tls13_case<S>(case: Tls13TestCase, server_socket: S) -> VerifierOutput
+where
+    S: AsyncWrite + AsyncRead + Send + Unpin + 'static,
+{
+    run_tls13_case_with_artifacts(case, server_socket)
+        .await
+        .verifier_output
+}
+
+#[allow(dead_code)]
+pub async fn run_tls13_case_with_artifacts<S>(
+    case: Tls13TestCase,
+    server_socket: S,
+) -> Tls13RunArtifacts
 where
     S: AsyncWrite + AsyncRead + Send + Unpin + 'static,
 {
@@ -101,7 +126,10 @@ where
     tokio::spawn(session_p_driver);
     tokio::spawn(session_v_driver);
 
-    let ((_full_transcript, _prover_output), verifier_output) = tokio::join!(
+    let (
+        (transcript, prover_output, handshake_data),
+        (verifier_output, connection_info, server_ephemeral_key),
+    ) = tokio::join!(
         run_prover(prover, case.clone(), server_socket),
         run_verifier(verifier)
     );
@@ -123,14 +151,22 @@ where
         0..10
     );
 
-    verifier_output
+    Tls13RunArtifacts {
+        server_name: verifier_output.server_name.clone().unwrap(),
+        handshake_data,
+        connection_info,
+        server_ephemeral_key,
+        transcript,
+        prover_output,
+        verifier_output,
+    }
 }
 
 async fn run_prover<S>(
     prover: Prover,
     case: Tls13TestCase,
     server_socket: S,
-) -> (Transcript, ProverOutput)
+) -> (Transcript, ProverOutput, HandshakeData)
 where
     S: AsyncWrite + AsyncRead + Send + Unpin + 'static,
 {
@@ -169,6 +205,15 @@ where
     let mut prover = prover_task.await.unwrap().unwrap();
     assert!(!response.is_empty());
     assert_eq!(*prover.tls_transcript().version(), TlsVersion::V1_3);
+    let handshake_data = HandshakeData {
+        certs: prover
+            .tls_transcript()
+            .server_cert_chain()
+            .unwrap()
+            .to_vec(),
+        sig: prover.tls_transcript().server_signature().unwrap().clone(),
+        binding: prover.tls_transcript().certificate_binding().clone(),
+    };
 
     let sent_tx_len = prover.transcript().sent().len();
     let recv_tx_len = prover.transcript().received().len();
@@ -203,10 +248,10 @@ where
     let output = prover.prove(&config).await.unwrap();
     prover.close().await.unwrap();
 
-    (transcript, output)
+    (transcript, output, handshake_data)
 }
 
-async fn run_verifier(verifier: Verifier) -> VerifierOutput {
+async fn run_verifier(verifier: Verifier) -> (VerifierOutput, ConnectionInfo, ServerEphemKey) {
     let verifier = verifier
         .commit()
         .await
@@ -218,8 +263,16 @@ async fn run_verifier(verifier: Verifier) -> VerifierOutput {
         .await
         .unwrap();
 
+    let tls_transcript = verifier.tls_transcript();
+    let connection_info = ConnectionInfo {
+        time: tls_transcript.time(),
+        version: *tls_transcript.version(),
+        transcript_length: tls_transcript.to_transcript().unwrap().length(),
+    };
+    let server_ephemeral_key = tls_transcript.server_ephemeral_key().clone();
+
     let (output, verifier) = verifier.verify().await.unwrap().accept().await.unwrap();
     verifier.close().await.unwrap();
 
-    output
+    (output, connection_info, server_ephemeral_key)
 }

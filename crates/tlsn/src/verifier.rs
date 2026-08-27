@@ -10,7 +10,7 @@ pub use tlsn_core::{VerifierOutput, webpki::ServerCertVerifier};
 
 use crate::{
     Error, Result,
-    mpz::{VerifierDeps, build_verifier_deps, translate_keys},
+    mpz::{VerifierDeps, build_verifier_deps, translate_keys, translate_tls13_plaintext_refs},
     msg::{ProveRequestMsg, Response, TlsCommitRequestMsg},
     tag::verify_tags,
 };
@@ -179,7 +179,11 @@ impl Verifier<state::CommitAccepted> {
     /// Runs the verifier until the TLS connection is closed.
     #[instrument(parent = &self.span, level = "info", skip_all, err)]
     pub async fn run(self) -> Result<Verifier<state::Committed>> {
-        let state::CommitAccepted { mpc_tls, vm, keys } = self.state;
+        let state::CommitAccepted {
+            mpc_tls,
+            vm,
+            mut keys,
+        } = self.state;
 
         info!("starting MPC-TLS");
 
@@ -201,6 +205,8 @@ impl Verifier<state::CommitAccepted> {
                     .with_msg("mpc finalization failed")
                     .with_source(e)
             })?;
+
+            translate_tls13_plaintext_refs(&mut keys, &vm);
 
             debug!("mpc finalized");
         }

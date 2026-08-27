@@ -13,7 +13,9 @@ use mpz_memory_core::{
 };
 use mpz_vm_core::{Call, CallableExt, Vm};
 use rangeset::{iter::RangeIterator, ops::Set, set::RangeSet};
-use tlsn_core::transcript::Record;
+use tlsn_core::transcript::{Direction, Record};
+
+use mpc_tls::Tls13PlaintextRef;
 
 use crate::transcript_internal::ReferenceMap;
 
@@ -81,21 +83,123 @@ pub(crate) fn prove_plaintext<'a>(
     Ok(plaintext_refs)
 }
 
-pub(crate) fn commit_public_plaintext(
+pub(crate) fn prove_tls13_plaintext(
     vm: &mut dyn Vm<Binary>,
     plaintext: &[u8],
-    ranges: &RangeSet<usize>,
+    records: &[Record],
+    retained_refs: &[Tls13PlaintextRef],
+    direction: Direction,
+    reveal: &RangeSet<usize>,
 ) -> Result<ReferenceMap, PlaintextAuthError> {
-    let plaintext_refs = alloc_plaintext(vm, ranges)?;
+    let (plaintext_refs, checks) =
+        setup_tls13_plaintext(plaintext, records, retained_refs, direction, reveal)?;
+    for (_, reference) in checks {
+        drop(vm.decode(reference).map_err(PlaintextAuthError::vm)?);
+    }
+    Ok(plaintext_refs)
+}
 
-    for (range, slice) in plaintext_refs.iter() {
-        vm.mark_public(*slice).map_err(PlaintextAuthError::vm)?;
-        vm.assign(*slice, plaintext[range].to_vec())
-            .map_err(PlaintextAuthError::vm)?;
-        vm.commit(*slice).map_err(PlaintextAuthError::vm)?;
+pub(crate) fn verify_tls13_plaintext(
+    vm: &mut dyn Vm<Binary>,
+    plaintext: &[u8],
+    records: &[Record],
+    retained_refs: &[Tls13PlaintextRef],
+    direction: Direction,
+    reveal: &RangeSet<usize>,
+) -> Result<(ReferenceMap, Tls13PlaintextProof), PlaintextAuthError> {
+    let (plaintext_refs, checks) =
+        setup_tls13_plaintext(plaintext, records, retained_refs, direction, reveal)?;
+    let checks = checks
+        .into_iter()
+        .map(|(expected, reference)| {
+            Ok((
+                expected,
+                vm.decode(reference).map_err(PlaintextAuthError::vm)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, PlaintextAuthError>>()?;
+    Ok((plaintext_refs, Tls13PlaintextProof { checks }))
+}
+
+fn setup_tls13_plaintext(
+    plaintext: &[u8],
+    records: &[Record],
+    retained_refs: &[Tls13PlaintextRef],
+    direction: Direction,
+    reveal: &RangeSet<usize>,
+) -> Result<(ReferenceMap, Vec<(Vec<u8>, Vector<U8>)>), PlaintextAuthError> {
+    let mut position = 0usize;
+    let mut refs = Vec::new();
+    let mut checks = Vec::new();
+
+    for record in records
+        .iter()
+        .filter(|record| record.typ == tlsn_core::transcript::ContentType::ApplicationData)
+    {
+        let reference = retained_refs
+            .iter()
+            .find(|reference| {
+                reference.direction() == direction && reference.sequence() == record.seq
+            })
+            .ok_or(ErrorRepr::MissingTls13Reference)?;
+        let inner = reference.inner_plaintext();
+        if inner.len() != record.ciphertext.len() {
+            return Err(ErrorRepr::InvalidTls13Boundary.into());
+        }
+        let record_plaintext = record
+            .plaintext
+            .as_ref()
+            .ok_or(ErrorRepr::MissingTls13Reference)?;
+        let suffix_len = inner
+            .len()
+            .checked_sub(record_plaintext.len())
+            .filter(|len| *len >= 1)
+            .ok_or(ErrorRepr::InvalidTls13Boundary)?;
+        if !record_plaintext.is_empty() {
+            let payload_ref = inner
+                .get(0..record_plaintext.len())
+                .ok_or(ErrorRepr::InvalidTls13Boundary)?;
+            refs.push((position, payload_ref));
+        }
+
+        let mut expected_suffix = vec![0u8; suffix_len];
+        expected_suffix[0] = tls13_content_type(record.typ);
+        let suffix_ref = inner
+            .get(record_plaintext.len()..inner.len())
+            .ok_or(ErrorRepr::InvalidTls13Boundary)?;
+        checks.push((expected_suffix, suffix_ref));
+        position += record_plaintext.len();
     }
 
-    Ok(plaintext_refs)
+    if position != plaintext.len() {
+        return Err(ErrorRepr::InvalidTls13Boundary.into());
+    }
+
+    let refs = ReferenceMap::from_iter(refs);
+    for range in reveal.iter() {
+        let mut expected_position = range.start;
+        for reference in refs
+            .get_all(range.clone())
+            .ok_or(ErrorRepr::InvalidTls13Boundary)?
+        {
+            let end = expected_position + reference.len();
+            checks.push((plaintext[expected_position..end].to_vec(), reference));
+            expected_position = end;
+        }
+    }
+
+    Ok((refs, checks))
+}
+
+fn tls13_content_type(content_type: tlsn_core::transcript::ContentType) -> u8 {
+    match content_type {
+        tlsn_core::transcript::ContentType::ChangeCipherSpec => 20,
+        tlsn_core::transcript::ContentType::Alert => 21,
+        tlsn_core::transcript::ContentType::Handshake => 22,
+        tlsn_core::transcript::ContentType::ApplicationData => 23,
+        tlsn_core::transcript::ContentType::Heartbeat => 24,
+        tlsn_core::transcript::ContentType::Unknown(value) => value,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -406,6 +510,26 @@ impl<'a> PlaintextProof<'a> {
     }
 }
 
+#[must_use]
+pub(crate) struct Tls13PlaintextProof {
+    checks: Vec<(Vec<u8>, DecodeFutureTyped<BitVec, Vec<u8>>)>,
+}
+
+impl Tls13PlaintextProof {
+    pub(crate) fn verify(self) -> Result<(), PlaintextAuthError> {
+        for (expected, mut actual) in self.checks {
+            let actual = actual
+                .try_recv()
+                .map_err(PlaintextAuthError::vm)?
+                .ok_or(ErrorRepr::MissingDecoding)?;
+            if actual != expected {
+                return Err(ErrorRepr::InvalidPlaintext.into());
+            }
+        }
+        Ok(())
+    }
+}
+
 enum ProofInner<'a> {
     WithKey {
         key: DecodeFutureTyped<BitVec, [u8; 16]>,
@@ -482,6 +606,10 @@ enum ErrorRepr {
     MissingDecoding,
     #[error("plaintext does not match ciphertext")]
     InvalidPlaintext,
+    #[error("missing authenticated TLS 1.3 plaintext reference")]
+    MissingTls13Reference,
+    #[error("TLS 1.3 record boundary does not match authenticated inner plaintext")]
+    InvalidTls13Boundary,
 }
 
 #[cfg(test)]
@@ -533,6 +661,43 @@ mod tests {
         }
 
         keystream
+    }
+
+    #[tokio::test]
+    async fn mutated_tls13_recv_record_cannot_replace_authenticated_plaintext() {
+        let (mut ctx, _) = test_st_context(1024);
+        let mut vm = IdealVm::new();
+        let inner = vm.alloc_vec::<U8>(5).unwrap();
+        vm.mark_public(inner).unwrap();
+        vm.assign(inner, b"real\x17".to_vec()).unwrap();
+        vm.commit(inner).unwrap();
+
+        let retained = [Tls13PlaintextRef::new(Direction::Received, 0, inner)];
+        let mutated_record = Record {
+            id: None,
+            seq: 0,
+            typ: tlsn_core::transcript::ContentType::ApplicationData,
+            plaintext: Some(b"fake".to_vec()),
+            explicit_nonce: Vec::new(),
+            ciphertext: vec![0u8; 5],
+            tag: Some(vec![0u8; 16]),
+        };
+        let reveal = RangeSet::from(0..4);
+        let (_, proof) = verify_tls13_plaintext(
+            &mut vm,
+            b"fake",
+            &[mutated_record],
+            &retained,
+            Direction::Received,
+            &reveal,
+        )
+        .unwrap();
+
+        vm.execute_all(&mut ctx).await.unwrap();
+        assert!(matches!(
+            proof.verify(),
+            Err(PlaintextAuthError(ErrorRepr::InvalidPlaintext))
+        ));
     }
 
     #[rstest]

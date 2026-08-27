@@ -210,6 +210,7 @@ impl MpcTlsLeader {
             server_write_key: keys.server_write_key,
             server_write_iv: keys.server_iv,
             server_write_mac_key,
+            tls13_plaintext_refs: record_layer.tls13_plaintext_refs(),
         };
 
         self.state = State::Setup {
@@ -409,6 +410,7 @@ impl MpcTlsLeader {
         ctx.io_mut().send(Message::CloseConnection).await?;
         if protocol_version == ProtocolVersion::TLSv1_3 {
             record_layer.finalize_tls13(&mut ctx, vm.clone()).await?;
+            record_layer.ensure_tls13_record_bindings()?;
         }
 
         let cf_vd = cf_vd.ok_or(MpcTlsError::state("client finished verify data not set"))?;
@@ -1535,10 +1537,16 @@ impl Backend for MpcTlsLeader {
                 }
             };
 
-            let ctx = match &mut self.state {
-                State::Handshake { ctx, .. } | State::Active { ctx, .. } => ctx,
+            let (ctx, record_layer) = match &mut self.state {
+                State::Handshake {
+                    ctx, record_layer, ..
+                }
+                | State::Active {
+                    ctx, record_layer, ..
+                } => (ctx, record_layer),
                 _ => unreachable!("state was matched above"),
             };
+            record_layer.bind_tls13_record(tlsn_core::transcript::Direction::Received, &record)?;
             ctx.io_mut()
                 .send(Message::Tls13RecvRecord(Tls13RecordMessage {
                     record: record.clone(),
@@ -1639,6 +1647,7 @@ impl Backend for MpcTlsLeader {
                             })?
                     }
                 };
+                record_layer.bind_tls13_record(tlsn_core::transcript::Direction::Sent, &record)?;
                 ctx.io_mut()
                     .send(Message::Tls13SendRecord(Tls13RecordMessage {
                         record: record.clone(),

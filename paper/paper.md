@@ -333,6 +333,15 @@ candidate plaintext, compute additive shares of the expected GCM tag, and run
 the authenticated-release step. A failed authentication attempt still consumes
 its sequence slot, preventing retry-induced nonce reuse.
 
+The joint record circuit also retains the exact TLS inner-plaintext VM
+reference. For sent records this is the encryption input; for received records
+it is constrained as the public ciphertext XOR the jointly generated
+keystream and is recorded only after tag verification succeeds. Post-MPC
+transcript reveal and hash commitment translate and consume this same
+reference. The verifier decodes the claimed content-type and zero-padding
+suffix, preventing the prover from changing either the bytes or their TLS
+application-data boundary during the later record handoff.
+
 AES-128 and AES-256 share this orchestration. The suite profile chooses the
 typed key width and preallocated AES circuit, while nonce construction, AAD,
 padding, sequence ownership, and release semantics remain common.
@@ -349,10 +358,12 @@ direction.
 
 The same identifiers are included in authenticated-release context,
 plaintext-hash commitment prefixes, secrets handed to the attestation API, and
-presentation verification. The commitment prefix also includes the disclosure
-direction, byte ranges, and ordered record identifiers before the plaintext and
-blinder are hashed. Consequently, identical plaintext at the same sequence in
-two sessions does not produce an interchangeable proof object.
+presentation verification. Commitment construction consumes the retained
+authenticated-plaintext VM references rather than allocating fresh values from
+the leader's later record message. The commitment prefix also includes the
+disclosure direction, byte ranges, and ordered record identifiers before the
+plaintext and blinder are hashed. Consequently, identical plaintext at the
+same sequence in two sessions does not produce an interchangeable proof object.
 
 #### Failure behavior and bounded resources
 
@@ -528,7 +539,10 @@ state transitions and data carried across them:
   callback and carries suite-typed key/IV references;
 - epoch-owned direction, generation, and sequence form the concrete
   `RecordId` used by record authentication;
-- authenticated release carries that record context; and
+- authenticated release carries that record context and preserves the exact
+  inner-plaintext VM reference;
+- reveal and hash commitment consume the translated reference and verify its
+  content-type/padding boundary; and
 - commitment construction and presentation verification retain the same
   session and record identifiers.
 
@@ -574,25 +588,27 @@ fixture and core validation are run by `./formal/validate.sh`.
 
 The implementation-facing reproducibility split is intentional:
 `cargo test -p tlsn-hmac-sha256 --lib` exercises 36 component tests, including
-12 focused SHA-384/reference tests; `cargo test -p tlsn-mpc-tls` exercises typed epochs, AES-256
-record round trips, SHA-384 epoch installation, and the public Finished
-callback; `formal/validate.sh` adds the TLS 1.3 fixture; and `formal/verify.sh`
-adds the focused integration tests before running the theorem checkers. This
-separates circuit/reference equivalence evidence from protocol interoperability
-evidence and from symbolic proof evidence.
+12 focused SHA-384/reference tests; `cargo test -p tlsn-mpc-tls` exercises typed
+epochs, AES-256 record round trips, SHA-384 epoch installation, and the public
+Finished callback; `formal/validate.sh` adds the release-to-commit mutation
+regression, the TLS 1.3 fixture, and a signed-attestation/presentation test
+verified by an independent provider; and `formal/verify.sh` adds the focused
+integration tests before running the theorem checkers. This separates
+circuit/reference equivalence evidence from protocol interoperability evidence
+and from symbolic proof evidence.
 
 # Claim--evidence matrix
 
 | Claim | Evidence now | Missing evidence |
 |---|---|---|
 | Keys are not intentionally decoded | Code audit; symbolic secrecy | Whole-program information-flow/refinement proof |
-| Authenticated release implies modeled server provenance | Unified Tamarin theorem and concrete session/record binding | Computational malicious-security reduction for the full MPC runtime |
+| Authenticated release implies modeled server provenance | Unified Tamarin theorem, exact released-plaintext VM reference consumed by commitment, mutation regression, and signed TLS 1.3 presentation test | Computational malicious-security reduction for the full MPC runtime |
 | Epoch sequences do not wrap or repeat locally | Lean and Kani | Concurrent whole-program refinement |
 | Fixed-IV nonce derivation is injective | Lean and Kani | Circuit/reference equivalence |
 | SHA-384 compression refines SHA-512 compression | Shared circuit/native wiring; arbitrary-input Kani primitive and compression proofs; MPZ tests | MPZ primitive gate semantics are trusted |
 | SHA-384 handshake/application key widths are preserved | Typed VM views, Lean width theorem, and concrete suite-profile Kani proofs | Whole-program runtime noninterference |
 | SHA-384 Finished output is public while its key stays secret-shared | Two-party MPC-TLS callback test | Full malicious-party composition |
-| Full proof transcript is authentic | Unified provenance theorem, exact Rust transcript retention, independent leader/follower rehashing | X.509 parser and full-runtime refinement |
+| Full proof transcript is authentic | Unified provenance theorem, exact authenticated-plaintext VM references, independent leader/follower proof execution, and fixture-backed signed presentation | X.509 parser and full-runtime refinement |
 | Selective disclosure preserves the public projection | Minimal Tamarin observational-equivalence model | Production leakage function and serialization refinement |
 
 The interoperation result is evidence of compatibility, not a security proof;

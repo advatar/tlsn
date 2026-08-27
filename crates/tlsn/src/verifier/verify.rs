@@ -2,8 +2,6 @@ use mpc_tls::SessionKeys;
 use mpz_common::Context;
 use mpz_memory_core::binary::Binary;
 use mpz_vm_core::Vm;
-use rangeset::iter::RangeIterator;
-use rangeset::ops::Set;
 use rangeset::set::RangeSet;
 use tlsn_core::{
     VerifierOutput,
@@ -19,10 +17,26 @@ use crate::{
     Error, Result,
     transcript_internal::{
         TranscriptRefs,
-        auth::{commit_public_plaintext, verify_plaintext},
+        auth::{PlaintextProof, Tls13PlaintextProof, verify_plaintext, verify_tls13_plaintext},
         commit::hash::verify_hash,
     },
 };
+
+enum AuthProof<'a> {
+    Tls12(PlaintextProof<'a>),
+    Tls13(Tls13PlaintextProof),
+}
+
+impl AuthProof<'_> {
+    fn verify(
+        self,
+    ) -> std::result::Result<(), crate::transcript_internal::auth::PlaintextAuthError> {
+        match self {
+            Self::Tls12(proof) => proof.verify(),
+            Self::Tls13(proof) => proof.verify(),
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
@@ -132,23 +146,25 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
         }
     }
 
+    let tls13_plaintext_refs = keys.tls13_plaintext_refs.records();
     let (sent_refs, sent_proof) = if tls_transcript.version() == &TlsVersion::V1_3 {
         let full_transcript = full_transcript
             .as_ref()
             .expect("tls13 transcript should be present");
-        (
-            commit_public_plaintext(
-                vm,
-                full_transcript.sent(),
-                &commit_sent.union(transcript.sent_authed()).into_set(),
-            )
-            .map_err(|e| {
-                Error::internal()
-                    .with_msg("verification failed during sent plaintext verification")
-                    .with_source(e)
-            })?,
-            None,
+        let (refs, proof) = verify_tls13_plaintext(
+            vm,
+            full_transcript.sent(),
+            tls_transcript.sent(),
+            &tls13_plaintext_refs,
+            Direction::Sent,
+            transcript.sent_authed(),
         )
+        .map_err(|e| {
+            Error::internal()
+                .with_msg("verification failed during sent plaintext verification")
+                .with_source(e)
+        })?;
+        (refs, Some(AuthProof::Tls13(proof)))
     } else {
         let (refs, proof) = verify_plaintext(
             vm,
@@ -168,25 +184,26 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
                 .with_msg("verification failed during sent plaintext verification")
                 .with_source(e)
         })?;
-        (refs, Some(proof))
+        (refs, Some(AuthProof::Tls12(proof)))
     };
     let (recv_refs, recv_proof) = if tls_transcript.version() == &TlsVersion::V1_3 {
         let full_transcript = full_transcript
             .as_ref()
             .expect("tls13 transcript should be present");
-        (
-            commit_public_plaintext(
-                vm,
-                full_transcript.received(),
-                &commit_recv.union(transcript.received_authed()).into_set(),
-            )
-            .map_err(|e| {
-                Error::internal()
-                    .with_msg("verification failed during received plaintext verification")
-                    .with_source(e)
-            })?,
-            None,
+        let (refs, proof) = verify_tls13_plaintext(
+            vm,
+            full_transcript.received(),
+            tls_transcript.recv(),
+            &tls13_plaintext_refs,
+            Direction::Received,
+            transcript.received_authed(),
         )
+        .map_err(|e| {
+            Error::internal()
+                .with_msg("verification failed during received plaintext verification")
+                .with_source(e)
+        })?;
+        (refs, Some(AuthProof::Tls13(proof)))
     } else {
         let (refs, proof) = verify_plaintext(
             vm,
@@ -206,7 +223,7 @@ pub(crate) async fn verify<T: Vm<Binary> + Send + Sync>(
                 .with_msg("verification failed during received plaintext verification")
                 .with_source(e)
         })?;
-        (refs, Some(proof))
+        (refs, Some(AuthProof::Tls12(proof)))
     };
 
     let transcript_refs = TranscriptRefs {

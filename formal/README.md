@@ -69,8 +69,11 @@ presentation agreement, and server-identity binding.
 
 `./formal/validate.sh` runs the executable MPC/reference equivalence tests for
 GHASH, AES-GCM, and secret-nonce TLS 1.3 records, the HMAC/key-schedule and
-TLS configuration suites, the public test build, and the focused end-to-end
-TLS 1.3 fixture. Docker interoperability remains an explicit separate suite.
+TLS configuration suites, the public test build, the adversarial
+release-to-commit mutation regression, the focused end-to-end TLS 1.3 fixture,
+and a signed TLS 1.3 attestation/presentation independently verified against
+the fixture trust root. Docker interoperability remains an explicit separate
+suite.
 
 Run that suite with `./formal/interop.sh`; it covers nginx RSA, nginx ECDSA,
 Apache RSA, Caddy RSA, and OpenSSL `s_server`.

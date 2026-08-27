@@ -2,8 +2,6 @@ use mpc_tls::SessionKeys;
 use mpz_common::Context;
 use mpz_memory_core::binary::Binary;
 use mpz_vm_core::Vm;
-use rangeset::iter::RangeIterator;
-use rangeset::ops::Set;
 use rangeset::set::RangeSet;
 use tlsn_core::{
     ProverOutput,
@@ -18,7 +16,7 @@ use crate::{
     Error, Result,
     transcript_internal::{
         TranscriptRefs,
-        auth::{commit_public_plaintext, prove_plaintext},
+        auth::{prove_plaintext, prove_tls13_plaintext},
         commit::hash::prove_hash,
     },
 };
@@ -47,12 +45,16 @@ pub(crate) async fn prove<T: Vm<Binary> + Send + Sync>(
             });
     }
 
+    let tls13_plaintext_refs = keys.tls13_plaintext_refs.records();
     let transcript_refs = TranscriptRefs {
         sent: if tls_transcript.version() == &TlsVersion::V1_3 {
-            commit_public_plaintext(
+            prove_tls13_plaintext(
                 vm,
                 transcript.sent(),
-                &commit_sent.union(&reveal_sent).into_set(),
+                tls_transcript.sent(),
+                &tls13_plaintext_refs,
+                Direction::Sent,
+                &reveal_sent,
             )
         } else {
             prove_plaintext(
@@ -74,10 +76,13 @@ pub(crate) async fn prove<T: Vm<Binary> + Send + Sync>(
                 .with_source(e)
         })?,
         recv: if tls_transcript.version() == &TlsVersion::V1_3 {
-            commit_public_plaintext(
+            prove_tls13_plaintext(
                 vm,
                 transcript.received(),
-                &commit_recv.union(&reveal_recv).into_set(),
+                tls_transcript.recv(),
+                &tls13_plaintext_refs,
+                Direction::Received,
+                &reveal_recv,
             )
         } else {
             prove_plaintext(

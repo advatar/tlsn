@@ -186,3 +186,18 @@ pub(crate) fn translate_keys<Mpc, Zk>(keys: &mut SessionKeys, vm: &Deap<Mpc, Zk>
         .translate(keys.server_write_mac_key)
         .expect("VM memory should be consistent");
 }
+
+pub(crate) fn translate_tls13_plaintext_refs<Mpc, Zk>(keys: &mut SessionKeys, vm: &Deap<Mpc, Zk>) {
+    let refs = keys
+        .tls13_plaintext_refs
+        .records()
+        .into_iter()
+        .map(|reference| {
+            let translated = vm
+                .translate(reference.inner_plaintext())
+                .expect("VM memory should be consistent");
+            reference.with_inner_plaintext(translated)
+        })
+        .collect();
+    keys.tls13_plaintext_refs.replace(refs);
+}

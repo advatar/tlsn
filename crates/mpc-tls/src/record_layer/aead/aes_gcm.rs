@@ -29,6 +29,7 @@ const START_CTR: u32 = 2;
 struct Tls13Record {
     leader_input: Vector<U8>,
     follower_input: Vector<U8>,
+    input: Vector<U8>,
     output: Vector<U8>,
     j0: OneTimePadShared<[u8; 16]>,
 }
@@ -254,6 +255,7 @@ impl MpcAesGcm {
             tls13_records.push_back(Tls13Record {
                 leader_input,
                 follower_input,
+                input,
                 output,
                 j0: j0_shared,
             });
@@ -289,7 +291,7 @@ impl MpcAesGcm {
             let j0 = self.tls13_aes256.alloc_ctr_block_with_nonce(vm, nonce)?;
             let j0_shared = OneTimePadShared::<[u8; 16]>::new(self.role, j0.output, vm)?;
             assign_j0_counter(vm, j0)?;
-            tls13_records_256.push_back(Tls13Record { leader_input, follower_input, output, j0: j0_shared });
+            tls13_records_256.push_back(Tls13Record { leader_input, follower_input, input, output, j0: j0_shared });
         }
         Ok(())
     }
@@ -482,6 +484,7 @@ impl MpcAesGcm {
             Vector<U8>,
             Vector<U8>,
             Vector<U8>,
+            Vector<U8>,
             OneTimePadShared<[u8; 16]>,
         ),
         AeadError,
@@ -495,6 +498,7 @@ impl MpcAesGcm {
         let Tls13Record {
             leader_input,
             follower_input,
+            mut input,
             mut output,
             j0,
         } = records
@@ -505,8 +509,9 @@ impl MpcAesGcm {
                 "TLS 1.3 record exceeds its preallocated length",
             ));
         }
+        input.truncate(len);
         output.truncate(len);
-        Ok((leader_input, follower_input, output, j0))
+        Ok((leader_input, follower_input, input, output, j0))
     }
 
     /// Drains input references for unused preallocated TLS 1.3 records.

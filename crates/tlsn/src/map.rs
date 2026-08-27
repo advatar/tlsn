@@ -39,21 +39,30 @@ where
             .map(|(idx, item)| (*idx..*idx + item.length(), item))
     }
 
-    pub(crate) fn get(&self, range: Range<usize>) -> Option<T::Slice<'_>> {
+    pub(crate) fn get_all(&self, range: Range<usize>) -> Option<Vec<T>> {
         if range.start >= range.end {
             return None;
         }
 
-        // Find the item with the greatest start index <= range.start
-        let pos = match self.map.binary_search_by(|(idx, _)| idx.cmp(&range.start)) {
-            Ok(i) => i,
-            Err(0) => return None,
-            Err(i) => i - 1,
-        };
+        let mut current = range.start;
+        let mut slices = Vec::new();
+        while current < range.end {
+            let pos = match self.map.binary_search_by(|(idx, _)| idx.cmp(&current)) {
+                Ok(i) => i,
+                Err(0) => return None,
+                Err(i) => i - 1,
+            };
+            let (base, item) = &self.map[pos];
+            let item_end = *base + item.length();
+            if current < *base || current >= item_end {
+                return None;
+            }
+            let end = range.end.min(item_end);
+            slices.push(item.slice(current - *base..end - *base)?.into());
+            current = end;
+        }
 
-        let (base, item) = &self.map[pos];
-
-        item.slice(range.start - *base..range.end - *base)
+        Some(slices)
     }
 
     pub(crate) fn index(&self, idx: &RangeSet<usize>) -> Option<Self> {
@@ -152,14 +161,18 @@ mod tests {
     fn test_range_map() {
         let map = RangeMap::from_iter([(0, 10..14), (10, 20..24), (20, 30..32)]);
 
-        assert_eq!(map.get(0..4), Some(10..14));
-        assert_eq!(map.get(10..14), Some(20..24));
-        assert_eq!(map.get(20..22), Some(30..32));
-        assert_eq!(map.get(0..2), Some(10..12));
-        assert_eq!(map.get(11..13), Some(21..23));
-        assert_eq!(map.get(0..10), None);
-        assert_eq!(map.get(10..20), None);
-        assert_eq!(map.get(20..30), None);
+        assert_eq!(map.get_all(0..4), Some(vec![10..14]));
+        assert_eq!(map.get_all(10..14), Some(vec![20..24]));
+        assert_eq!(map.get_all(20..22), Some(vec![30..32]));
+        assert_eq!(map.get_all(0..2), Some(vec![10..12]));
+        assert_eq!(map.get_all(11..13), Some(vec![21..23]));
+        assert_eq!(map.get_all(0..10), None);
+        assert_eq!(map.get_all(10..20), None);
+        assert_eq!(map.get_all(20..30), None);
+        assert_eq!(map.get_all(2..21), None);
+
+        let adjacent = RangeMap::from_iter([(0, 10..14), (4, 20..24)]);
+        assert_eq!(adjacent.get_all(2..6), Some(vec![12..14, 20..22]));
     }
 
     #[test]

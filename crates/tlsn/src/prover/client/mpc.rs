@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error as TlsnError,
-    mpz::{ProverMpc, ProverZk},
+    mpz::{ProverMpc, ProverZk, translate_tls13_plaintext_refs},
     prover::client::{DecryptState, TlsClient, TlsOutput},
     tag::verify_tags,
 };
@@ -398,7 +398,7 @@ impl InnerState {
 
     #[instrument(parent = &self.span, level = "debug", skip_all, err)]
     async fn finalize(
-        self,
+        mut self,
         mut ctx: Context,
         transcript: TlsTranscript,
     ) -> Result<(Self, Context, TlsTranscript), TlsnError> {
@@ -409,6 +409,8 @@ impl InnerState {
             vm.finalize(&mut ctx)
                 .await
                 .map_err(|err| TlsnError::internal().with_source(err))?;
+
+            translate_tls13_plaintext_refs(&mut self.keys, &vm);
 
             debug!("mpc finalized");
 
