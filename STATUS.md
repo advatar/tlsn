@@ -256,9 +256,9 @@ profile under an accredited issuer trust framework.
 
 ### Verification
 
-- VIR TypeScript checks and all 72 tests pass; TLSNotary targeted crate suites pass all 154 tests.
+- VIR TypeScript checks and all 82 tests pass; TLSNotary targeted crate suites pass all 156 tests.
 - Real OpenAI TLS 1.3 notarization returned `gpt-5.4-mini-2026-03-17`; pinned ES256 + ML-DSA-65 signatures, exact request/response/nonce, receipt signature and evidence commitment verified.
 - Repeated the live smoke using binaries built in an isolated checkout excluding unrelated TLSNotary working-tree changes.
-- Clean-checkout receipt: `vir_29f7621c8082416eb3e34cf51ca9a623`; local evidence retained in VIR `.vir/tlsn-smoke/376c7c2ead69bead/`.
+- Clean-checkout receipt: `vir_967f325878fd43f3a249895ec5bfc80d`; local evidence retained in VIR `.vir/tlsn-smoke/6bb5e76e7a449306/`.
 - Linux VIR integration image builds, and the optional ZeroK Compose overlay validates.
 - Integration is opt-in; local colocated notarization is not an independently administered production witness. TLS 1.3 transport remains classical; PQ protection applies to notary signatures.

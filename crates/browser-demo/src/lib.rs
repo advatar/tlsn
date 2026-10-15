@@ -447,14 +447,15 @@ async fn run_verifier(
         .context("failed to connect verifier to browser session")?;
     let output = verifier.verify().await.context("verifier failed")?;
 
-    browser_to_verifier
-        .await
-        .context("browser_to_verifier task panicked")?
-        .context("browser_to_verifier task failed")?;
-    verifier_to_browser
-        .await
-        .context("verifier_to_browser task panicked")?
-        .context("verifier_to_browser task failed")?;
+    // The SDK has already authenticated the session and accepted the proof.
+    // A peer closing its WebSocket concurrently with the final mux/IO shutdown
+    // must not turn that accepted proof into a failed artifact. Errors before
+    // verification still propagate through verifier.verify() above.
+    for cleanup in [browser_to_verifier, verifier_to_browser] {
+        if !matches!(cleanup.await, Ok(Ok(()))) {
+            warn!("verified notary session completed with a transport cleanup error");
+        }
+    }
 
     Ok(output)
 }
@@ -534,10 +535,9 @@ where
             .context("failed to send websocket binary frame")?;
     }
 
-    sender
-        .send(Message::Close(None))
-        .await
-        .context("failed to close websocket stream")?;
+    // Every binary send above has been flushed. At EOF the peer may already
+    // have sent Close, so only the final close handshake is best-effort.
+    let _ = sender.close().await;
     Ok(())
 }
 
@@ -661,6 +661,72 @@ mod tests {
                     .map(str::to_string))
                 .as_deref(),
             Some("example.com"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod close_race_tests {
+    use super::*;
+    use std::{
+        pin::Pin,
+        task::{Context as TaskContext, Poll},
+    };
+    struct ClosingSink {
+        fail_data: bool,
+    }
+    impl futures::Sink<Message> for ClosingSink {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+            if self.fail_data {
+                Err(axum::Error::new(std::io::Error::from(
+                    std::io::ErrorKind::BrokenPipe,
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _: &mut TaskContext<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Err(axum::Error::new(std::io::Error::from(
+                std::io::ErrorKind::BrokenPipe,
+            ))))
+        }
+    }
+    #[tokio::test]
+    async fn eof_close_race_does_not_discard_flushed_data() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        writer.write_all(b"proof").await.unwrap();
+        writer.shutdown().await.unwrap();
+        assert!(
+            pump_io_to_websocket(reader, ClosingSink { fail_data: false })
+                .await
+                .is_ok()
+        );
+    }
+    #[tokio::test]
+    async fn binary_delivery_errors_are_still_fatal() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        writer.write_all(b"proof").await.unwrap();
+        writer.shutdown().await.unwrap();
+        assert!(
+            pump_io_to_websocket(reader, ClosingSink { fail_data: true })
+                .await
+                .is_err()
         );
     }
 }
