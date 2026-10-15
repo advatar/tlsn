@@ -245,3 +245,20 @@ profile under an accredited issuer trust framework.
 - [x] Highlight the machine-checked Tamarin and Lean verification boundaries without overstating them.
 - [x] Link visitors to the GitHub implementation, formal artifacts, and reproducibility instructions.
 - [x] Verify the production build and commit the landing-page changes.
+
+## TLSNotary frontier-provider provenance integration
+
+- [x] Add a native notarized HTTPS POST client with API-key redaction.
+- [x] Verify pinned ES256 + ML-DSA-65 evidence and exact request/response binding in VIR.
+- [x] Retain evidence with signed receipts and expose independent verification.
+- [x] Wire opt-in ZeroK deployment, document trust boundaries, and validate adversarial and integration paths.
+- VIR issue: https://github.com/advatar/VIR/issues/16
+
+### Verification
+
+- VIR TypeScript checks and all 72 tests pass; TLSNotary targeted crate suites pass all 154 tests.
+- Real OpenAI TLS 1.3 notarization returned `gpt-5.4-mini-2026-03-17`; pinned ES256 + ML-DSA-65 signatures, exact request/response/nonce, receipt signature and evidence commitment verified.
+- Repeated the live smoke using binaries built in an isolated checkout excluding unrelated TLSNotary working-tree changes.
+- Clean-checkout receipt: `vir_29f7621c8082416eb3e34cf51ca9a623`; local evidence retained in VIR `.vir/tlsn-smoke/376c7c2ead69bead/`.
+- Linux VIR integration image builds, and the optional ZeroK Compose overlay validates.
+- Integration is opt-in; local colocated notarization is not an independently administered production witness. TLS 1.3 transport remains classical; PQ protection applies to notary signatures.

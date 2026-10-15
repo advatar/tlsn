@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 pub struct ProverConfig {
     /// The server name (domain) to connect to.
     pub server_name: String,
+    /// Optional protocol selection; absent preserves the existing TLS 1.2 default.
+    #[serde(default)]
+    pub tls_version: Option<crate::types::TlsVersion>,
     /// Maximum bytes that can be sent.
     pub max_sent_data: usize,
     /// Maximum number of sent records.
@@ -36,6 +39,7 @@ impl ProverConfig {
 #[derive(Debug, Clone)]
 pub struct ProverConfigBuilder {
     server_name: String,
+    tls_version: Option<crate::types::TlsVersion>,
     max_sent_data: usize,
     max_sent_records: Option<usize>,
     max_recv_data_online: Option<usize>,
@@ -51,6 +55,7 @@ impl ProverConfigBuilder {
     pub fn new(server_name: impl Into<String>) -> Self {
         Self {
             server_name: server_name.into(),
+            tls_version: None,
             max_sent_data: 4096,
             max_sent_records: None,
             max_recv_data_online: None,
@@ -60,6 +65,12 @@ impl ProverConfigBuilder {
             network: NetworkSetting::Latency,
             client_auth: None,
         }
+    }
+
+    /// Selects exactly one TLS version, without negotiation downgrade.
+    pub fn tls_version(mut self, version: crate::types::TlsVersion) -> Self {
+        self.tls_version = Some(version);
+        self
     }
 
     /// Sets the maximum bytes that can be sent.
@@ -114,6 +125,7 @@ impl ProverConfigBuilder {
     pub fn build(self) -> ProverConfig {
         ProverConfig {
             server_name: self.server_name,
+            tls_version: self.tls_version,
             max_sent_data: self.max_sent_data,
             max_sent_records: self.max_sent_records,
             max_recv_data_online: self.max_recv_data_online,
@@ -239,4 +251,24 @@ pub struct ClientAuth {
     pub certs: Vec<Vec<u8>>,
     /// Client private key (DER encoded).
     pub key: Vec<u8>,
+}
+
+#[cfg(test)]
+mod version_selection_tests {
+    use super::*;
+    use crate::types::TlsVersion;
+
+    #[test]
+    fn explicit_tls13_roundtrips_and_old_configs_keep_default() {
+        let explicit = ProverConfig::builder("api.openai.com")
+            .tls_version(TlsVersion::V1_3)
+            .build();
+        let value = serde_json::to_value(&explicit).unwrap();
+        let restored: ProverConfig = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(restored.tls_version, Some(TlsVersion::V1_3));
+        let mut old = value;
+        old.as_object_mut().unwrap().remove("tls_version");
+        let restored: ProverConfig = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.tls_version, None);
+    }
 }

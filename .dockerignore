@@ -1,2 +1,7 @@
 /target
 /.git
+
+**/.env*
+**/.vir
+**/node_modules
+**/target

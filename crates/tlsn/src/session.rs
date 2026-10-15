@@ -304,10 +304,25 @@ impl Mux for MuxHandle {
             .handle
             .new_stream(id.as_ref())
             .map_err(std::io::Error::other)?;
-        let io = Io::from_io(stream);
+        let io = mpc_transport(stream);
 
         Ok(io)
     }
+}
+
+// TLS 1.3 record-protection COT batches can exceed tokio-util's 8 MiB default.
+// Keep an explicit ceiling; transcript budgets and verifier admission still bound work.
+const MAX_MPC_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+fn mpc_transport<T>(stream: T) -> Io
+where
+    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+{
+    let mut io = Io::from_io(stream);
+    // MPZ exposes only a temporary limit guard. It owns no transport/allocation;
+    // forgetting the non-owning guard retains this bounded limit for the stream lifetime.
+    std::mem::forget(io.with_limit(MAX_MPC_FRAME_BYTES));
+    io
 }
 
 /// Builds a multi-threaded context with the given muxer.
@@ -323,4 +338,35 @@ fn build_mt_context(mux: MuxHandle) -> Multithread {
     });
 
     builder.build().unwrap()
+}
+
+#[cfg(test)]
+mod transport_frame_tests {
+    use super::*;
+    use serio::{SinkExt, StreamExt};
+    use tokio_util::compat::TokioAsyncReadCompatExt;
+
+    #[tokio::test]
+    async fn mpc_batches_above_eight_mib_cross_real_framed_transport() {
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        let mut sender = mpc_transport(a.compat());
+        let mut receiver = mpc_transport(b.compat());
+        assert_eq!(receiver.limit(), MAX_MPC_FRAME_BYTES);
+        let data = vec![7u8; 9 * 1024 * 1024];
+        let (sent, received) = tokio::join!(sender.send(data.clone()), receiver.next::<Vec<u8>>());
+        sent.unwrap();
+        assert_eq!(received.unwrap().unwrap(), data);
+    }
+    #[tokio::test]
+    async fn transport_rejects_frames_above_the_explicit_ceiling() {
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let mut io = mpc_transport(reader.compat());
+        tokio::io::AsyncWriteExt::write_all(
+            &mut writer,
+            &((MAX_MPC_FRAME_BYTES + 1) as u32).to_be_bytes(),
+        )
+        .await
+        .unwrap();
+        assert!(io.next::<Vec<u8>>().await.unwrap().is_err());
+    }
 }

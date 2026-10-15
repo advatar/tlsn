@@ -3,15 +3,15 @@
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use tlsn::{
+    Session, SessionHandle,
     config::{
         prove::ProveConfig,
-        tls::TlsClientConfig,
-        tls_commit::{mpc::MpcTlsConfig, TlsCommitConfig},
+        tls::{OfferedVersions, TlsClientConfig},
+        tls_commit::{TlsCommitConfig, mpc::MpcTlsConfig},
     },
     connection::ServerName,
-    prover::{state, Prover, TlsConnection},
+    prover::{Prover, TlsConnection, state},
     webpki::{CertificateDer, PrivateKeyDer, RootCertStore},
-    Session, SessionHandle,
 };
 use tracing::{error, info};
 
@@ -178,7 +178,11 @@ impl SdkProver {
                     .try_into()
                     .map_err(|_| SdkError::config("invalid server name"))?,
             ))
-            .root_store(RootCertStore::mozilla());
+            .root_store(RootCertStore::mozilla())
+            .offered_versions(match self.config.tls_version {
+                Some(TlsVersion::V1_3) => OfferedVersions::Tls13Only,
+                Some(TlsVersion::V1_2) | None => OfferedVersions::Tls12Only,
+            });
 
         if let Some(ref client_auth) = self.config.client_auth {
             let certs = client_auth

@@ -124,3 +124,7 @@ for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Native inference provider integration
+
+`cargo build --release -p tlsn-browser-demo --bins` also builds `tlsn-provider`, a one-shot native TLS 1.3 OpenAI-compatible HTTPS POST prover for VIR/ZeroK. It uses the existing MPC-TLS SDK, discloses request/response data while hiding Authorization values, and returns the portable notary artifact. VIR independently verifies pinned ES256 and ML-DSA-65 signatures and HTTP/model/request bindings before issuing a receipt. See [VIR integration and trust boundaries](https://github.com/advatar/VIR/blob/main/docs/tlsnotary.md). This does not enable the experimental hybrid ML-KEM transport.

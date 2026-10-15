@@ -1,12 +1,12 @@
 //! SDK Verifier implementation.
 
 use tlsn::{
+    Session, SessionHandle,
     config::tls_commit::TlsCommitProtocolConfig,
     connection::{ConnectionInfo, ServerName, TranscriptLength},
     transcript::ContentType,
-    verifier::{state, Verifier},
+    verifier::{Verifier, state},
     webpki::RootCertStore,
-    Session, SessionHandle,
 };
 use tracing::info;
 
@@ -154,21 +154,34 @@ impl SdkVerifier {
             .await
             .map_err(|e| SdkError::protocol(e.to_string()))?;
 
-        let sent = verifier
-            .tls_transcript()
-            .sent()
-            .iter()
-            .filter(|record| record.typ == ContentType::ApplicationData)
-            .map(|record| record.ciphertext.len())
-            .sum::<usize>();
+        // TLS 1.3 ciphertext lengths also include the authenticated inner content
+        // type and padding. The SDK contract describes application transcript bytes.
+        let (sent, received) =
+            if *verifier.tls_transcript().version() == tlsn::connection::TlsVersion::V1_3 {
+                verifier
+                    .tls_transcript()
+                    .to_transcript()
+                    .map_err(|e| SdkError::protocol(e.to_string()))?
+                    .len()
+            } else {
+                let sent = verifier
+                    .tls_transcript()
+                    .sent()
+                    .iter()
+                    .filter(|record| record.typ == ContentType::ApplicationData)
+                    .map(|record| record.ciphertext.len())
+                    .sum::<usize>();
 
-        let received = verifier
-            .tls_transcript()
-            .recv()
-            .iter()
-            .filter(|record| record.typ == ContentType::ApplicationData)
-            .map(|record| record.ciphertext.len())
-            .sum::<usize>();
+                let received = verifier
+                    .tls_transcript()
+                    .recv()
+                    .iter()
+                    .filter(|record| record.typ == ContentType::ApplicationData)
+                    .map(|record| record.ciphertext.len())
+                    .sum::<usize>();
+
+                (sent, received)
+            };
 
         let connection_info = ConnectionInfo {
             time: verifier.tls_transcript().time(),

@@ -209,7 +209,7 @@ impl TlsTranscript {
                         typ => {
                             return Err(TlsTranscriptError::validation(format!(
                                 "sent unexpected record content type: {typ:?}"
-                            )))
+                            )));
                         }
                     }
                 }
@@ -222,7 +222,7 @@ impl TlsTranscript {
                         typ => {
                             return Err(TlsTranscriptError::validation(format!(
                                 "received unexpected record content type: {typ:?}"
-                            )))
+                            )));
                         }
                     }
                 }
@@ -396,27 +396,59 @@ fn validate_tls13_finished<'a>(
     expected_verify_data: &[u8],
     side: &str,
 ) -> Result<(), TlsTranscriptError> {
+    // TLS handshake messages may be coalesced in one record or fragmented across
+    // records. A real provider can put Certificate/CertificateVerify/Finished in
+    // one authenticated record; inspecting only its first message loses Finished.
+    let mut pending = Vec::new();
     for record in records {
-        let Some(payload) = record.plaintext.as_ref() else {
+        if record.typ != ContentType::Handshake {
+            if !pending.is_empty() {
+                return Err(TlsTranscriptError::validation(
+                    "interrupted TLS 1.3 handshake message",
+                ));
+            }
             continue;
-        };
-
-        let mut reader = Reader::init(payload);
-        let Some(payload) = HandshakeMessagePayload::read_version(&mut reader, wire_version) else {
-            continue;
-        };
-
-        let HandshakePayload::Finished(vd) = payload.payload else {
-            continue;
-        };
-
-        if vd.0 != expected_verify_data {
-            return Err(TlsTranscriptError::validation(format!(
-                "inconsistent {side} finished verify data",
-            )));
         }
-
-        return Ok(());
+        let payload = record.plaintext.as_ref().ok_or_else(|| {
+            TlsTranscriptError::validation("TLS 1.3 handshake plaintext was hidden")
+        })?;
+        pending.extend_from_slice(payload);
+        loop {
+            if pending.len() < 4 {
+                break;
+            }
+            let length = 4
+                + ((pending[1] as usize) << 16)
+                + ((pending[2] as usize) << 8)
+                + pending[3] as usize;
+            if pending.len() < length {
+                break;
+            }
+            let mut reader = Reader::init(&pending[..length]);
+            let message = HandshakeMessagePayload::read_version(&mut reader, wire_version)
+                .ok_or_else(|| {
+                    TlsTranscriptError::validation("invalid TLS 1.3 handshake message")
+                })?;
+            if reader.any_left() {
+                return Err(TlsTranscriptError::validation(
+                    "trailing TLS 1.3 handshake bytes",
+                ));
+            }
+            if let HandshakePayload::Finished(vd) = message.payload {
+                if vd.0 != expected_verify_data {
+                    return Err(TlsTranscriptError::validation(format!(
+                        "inconsistent {side} finished verify data"
+                    )));
+                }
+                return Ok(());
+            }
+            pending.drain(..length);
+        }
+    }
+    if !pending.is_empty() {
+        return Err(TlsTranscriptError::validation(
+            "truncated TLS 1.3 handshake message",
+        ));
     }
 
     Err(TlsTranscriptError::validation(format!(
@@ -457,7 +489,7 @@ fn validate_tls13_record_types<'a>(
             typ => {
                 return Err(TlsTranscriptError::validation(format!(
                     "{side} unexpected record content type: {typ:?}",
-                )))
+                )));
             }
         }
     }
@@ -503,4 +535,69 @@ enum ErrorRepr {
     Validation(String),
     #[error("incomplete transcript ({direction}): seq {seq}")]
     Incomplete { direction: Direction, seq: u64 },
+}
+
+#[cfg(test)]
+mod coalesced_finished_tests {
+    use super::*;
+    fn record(bytes: Vec<u8>) -> Record {
+        Record {
+            id: None,
+            seq: 0,
+            typ: ContentType::Handshake,
+            plaintext: Some(bytes),
+            explicit_nonce: vec![],
+            ciphertext: vec![],
+            tag: None,
+        }
+    }
+    fn finished() -> Vec<u8> {
+        let mut message = vec![20, 0, 0, 32];
+        message.extend_from_slice(&[42; 32]);
+        message
+    }
+    fn validate(records: &[Record]) -> Result<(), TlsTranscriptError> {
+        validate_tls13_finished(records, ProtocolVersion::TLSv1_3, &[42; 32], "server")
+    }
+    #[test]
+    fn authenticates_finished_after_a_coalesced_handshake_message() {
+        let mut payload = vec![8, 0, 0, 2, 0, 0]; // Empty EncryptedExtensions.
+        payload.extend(finished());
+        assert!(validate(&[record(payload)]).is_ok());
+    }
+    #[test]
+    fn authenticates_finished_fragmented_between_records() {
+        let bytes = finished();
+        for split in [1, 3, 5, 17] {
+            assert!(
+                validate(&[
+                    record(bytes[..split].to_vec()),
+                    record(bytes[split..].to_vec())
+                ])
+                .is_ok()
+            );
+        }
+    }
+    #[test]
+    fn rejects_wrong_hidden_truncated_or_application_finished() {
+        let mut wrong = finished();
+        wrong[4] ^= 1;
+        assert!(validate(&[record(wrong)]).is_err());
+        let mut hidden = record(finished());
+        hidden.plaintext = None;
+        assert!(validate(&[hidden]).is_err());
+        let mut app = record(finished());
+        app.typ = ContentType::ApplicationData;
+        assert!(validate(&[app.clone()]).is_err());
+        assert!(validate(&[record(finished()[..8].to_vec())]).is_err());
+        assert!(
+            validate(&[
+                record(finished()[..3].to_vec()),
+                app,
+                record(finished()[3..].to_vec())
+            ])
+            .is_err()
+        );
+        assert!(validate(&[record(vec![8, 0, 0, 2, 255, 0])]).is_err());
+    }
 }
